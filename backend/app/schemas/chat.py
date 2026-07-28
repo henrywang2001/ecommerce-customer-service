@@ -1,5 +1,5 @@
 """对话相关 Pydantic Schemas"""
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, AliasChoices
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from enum import Enum
@@ -20,10 +20,10 @@ class SenderType(str, Enum):
 # ==================== 请求模型 ====================
 
 class SendMessageRequest(BaseModel):
-    session_id: str = Field(..., description="会话ID")
+    session_id: str = Field(..., validation_alias=AliasChoices("session_id", "sessionId"), description="会话ID")
     content: str = Field(..., min_length=1, max_length=2000, description="消息内容")
-    user_id: Optional[int] = Field(None, description="用户ID")
-    content_type: str = Field("text", description="内容类型")
+    user_id: Optional[int] = Field(None, validation_alias=AliasChoices("user_id", "userId"), description="用户ID")
+    content_type: str = Field("text", validation_alias=AliasChoices("content_type", "contentType"), description="内容类型")
     metadata: Optional[Dict[str, Any]] = Field(default_factory=dict, description="元数据")
 
 

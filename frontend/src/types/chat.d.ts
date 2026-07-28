@@ -41,9 +41,9 @@ export interface SessionInfo {
 }
 
 export interface SendMessageRequest {
-  sessionId: string
+  session_id: string
   content: string
-  userId?: number
+  user_id?: number
   content_type?: string
 }
 

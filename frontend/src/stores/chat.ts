@@ -54,7 +54,7 @@ export const useChatStore = defineStore('chat', () => {
 
     try {
       const result = await chatApi.sendMessage({
-        sessionId: sessionId.value,
+        session_id: sessionId.value,
         content,
       })
 
