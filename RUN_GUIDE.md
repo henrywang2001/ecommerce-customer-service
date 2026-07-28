@@ -55,11 +55,11 @@ python scripts/init_vector_db.py
 
 ### 5. 环境变量说明
 
-项目已预配置 `.env` 文件，包含：
-- **LLM**: DeepSeek `deepseek-v4-flash`，API Key: `your-api-key-here`
-- **Embedding**: 千问 `text-embedding-v1`，API Key: `your-embedding-api-key`
+项目已预配置 `.env` 文件，模型及 API Key 通过环境变量注入：
+- **LLM**: DeepSeek `deepseek-v4-flash` → 环境变量 `LLM_API_KEY`
+- **Embedding**: 千问 `text-embedding-v1` → 环境变量 `EMBEDDING_API_KEY`
 
-如需修改，编辑 `backend/.env` 文件。
+如需修改，编辑 `backend/.env` 中对应的环境变量。
 
 ### 6. 启动后端服务
 
@@ -177,7 +177,7 @@ A: 编辑 `frontend/vite.config.ts`，修改 `server.port` 的值。
 当前使用：
 - **模型**：DeepSeek V4 Flash
 - **API Base**：`https://api.deepseek.com/v1`
-- **API Key**：`your-api-key-here`
+- **API Key**：在 `backend/.env` 中配置 `LLM_API_KEY`
 
 切换到其他 LLM（如 OpenAI）只需修改 `backend/.env` 中的 `LLM_API_KEY`、`LLM_MODEL`、`LLM_API_BASE`。
 
@@ -186,7 +186,7 @@ A: 编辑 `frontend/vite.config.ts`，修改 `server.port` 的值。
 当前使用：
 - **模型**：千问 text-embedding-v1
 - **API Base**：`https://dashscope.aliyuncs.com/compatible-mode/v1`（兼容 OpenAI 格式）
-- **API Key**：`your-embedding-api-key`
+- **API Key**：在 `backend/.env` 中配置 `EMBEDDING_API_KEY`
 
 ### 意图分类体系
 
