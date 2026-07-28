@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ecommerce-customer-service"
+version = "1.0.0"
+description = "电商智能客服系统 — Vue3 + FastAPI + LLM + RAG + Agent"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
