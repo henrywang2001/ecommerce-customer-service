@@ -58,6 +58,7 @@ python scripts/init_vector_db.py
 项目已预配置 `.env` 文件，模型及 API Key 通过环境变量注入：
 - **LLM**: DeepSeek `deepseek-v4-flash` → 环境变量 `LLM_API_KEY`
 - **Embedding**: 千问 `text-embedding-v1` → 环境变量 `EMBEDDING_API_KEY`
+- **可观测性**: Langfuse → 环境变量 `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY`
 
 如需修改，编辑 `backend/.env` 中对应的环境变量。
 
@@ -187,6 +188,41 @@ A: 编辑 `frontend/vite.config.ts`，修改 `server.port` 的值。
 - **模型**：千问 text-embedding-v1
 - **API Base**：`https://dashscope.aliyuncs.com/compatible-mode/v1`（兼容 OpenAI 格式）
 - **API Key**：在 `backend/.env` 中配置 `EMBEDDING_API_KEY`
+
+### 可观测性配置 (Langfuse)
+
+项目集成了 Langfuse 全链路追踪，覆盖 LLM 调用、RAG 检索、Agent 工具执行等环节。
+
+**快速配置：**
+
+1. 注册 [Langfuse Cloud](https://cloud.langfuse.com) 或部署自托管实例
+2. 在 `backend/.env` 中配置：
+```bash
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_SECRET_KEY=sk-lf-...
+LANGFUSE_BASE_URL=https://cloud.langfuse.com
+LANGFUSE_TRACING_ENABLED=true
+LANGFUSE_ENVIRONMENT=development
+```
+3. 重启后端，追踪数据自动上报
+
+**追踪结构：**
+```
+chat-send-message (根 span)
+├── intent-recognition        # 意图识别 span
+│   └── intent-classify       # LLM 意图分类 generation
+├── sentiment-analysis        # 情感分析 span
+├── handle-with-tools         # 工具处理 span
+│   ├── rag-search            # RAG 检索 retriever
+│   │   └── text-embedding    # 向量化 embedding
+│   ├── rag-generate          # RAG 生成 generation
+│   └── agent-tool-*          # Agent 工具执行 tool
+├── handle-with-llm           # LLM 直接回复
+│   └── llm-chat              # 多轮对话 generation
+└── handle-transfer           # 转人工 span
+```
+
+> 未配置 API Key 时，所有追踪代码自动降级为 no-op，不影响业务运行。
 
 ### 意图分类体系
 

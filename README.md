@@ -20,6 +20,7 @@ Vue3 + FastAPI + LLM + RAG + Agent 的电商智能客服系统。融合了大语
 - **AI 服务**：DeepSeek（LLM）+ 千问 text-embedding-v1（向量）
 - **数据库**：MySQL + Redis + ChromaDB（向量数据库）
 - **Agent 架构**：ReAct（Reasoning + Acting）
+- **可观测性**：Langfuse（全链路追踪/LLM调用监控/RAG检索分析）
 
 ## 📁 项目结构
 
@@ -47,7 +48,8 @@ ecommerce-customer-service/
 │   │   │   ├── intent_service.py      # 意图识别（多策略融合）
 │   │   │   ├── sentiment_service.py   # 情感分析（词典+规则）
 │   │   │   ├── rag_service.py         # RAG 检索增强生成
-│   │   │   └── chat_service.py        # 对话服务（整合所有模块）
+│   │   │   ├── chat_service.py        # 对话服务（整合所有模块）
+│   │   │   └── observe_service.py     # Langfuse 可观测性服务
 │   │   ├── agents/            # Agent 系统
 │   │   │   ├── base_agent.py          # Agent 基类
 │   │   │   ├── customer_agent.py      # 客服 Agent（ReAct）
@@ -75,3 +77,39 @@ ecommerce-customer-service/
 ## 🚀 快速开始
 
 详见 **[RUN_GUIDE.md](RUN_GUIDE.md)**
+
+
+## 🔭 可观测性 (Langfuse)
+
+项目集成了 Langfuse 全链路追踪，每次对话请求自动记录完整调用链：
+
+```
+chat-send-message
+├── intent-recognition      # 意图识别
+│   └── intent-classify     # LLM 意图分类 (generation)
+├── sentiment-analysis      # 情感分析
+├── handle-xxx              # 意图分发
+│   ├── rag-search          # RAG 向量检索 (retriever)
+│   │   └── text-embedding  # 查询向量化 (embedding)
+│   ├── rag-generate        # RAG 生成回答 (generation)
+│   ├── llm-chat            # LLM 多轮对话 (generation)
+│   └── agent-tool-*        # Agent 工具调用 (tool)
+```
+
+### 配置
+
+在 `backend/.env` 中设置：
+
+```bash
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_SECRET_KEY=sk-lf-...
+LANGFUSE_BASE_URL=https://cloud.langfuse.com   # 或自托管地址
+LANGFUSE_TRACING_ENABLED=true
+LANGFUSE_ENVIRONMENT=development
+```
+
+> 未配置 API Key 时追踪自动降级为 no-op，不影响业务运行。
+
+### 查看追踪
+
+登录 [Langfuse Cloud](https://cloud.langfuse.com) 或自托管实例，在 Traces 页面可查看每次对话的完整调用链路、LLM 耗时、RAG 检索命中率等指标。
