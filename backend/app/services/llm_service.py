@@ -1,9 +1,10 @@
-"""LLM 服务 - 使用 DeepSeek API"""
+"""LLM 服务 - 使用 DeepSeek API（集成 Langfuse 追踪）"""
 from typing import List, Dict, Optional
 import httpx
 import json
 import logging
 from app.core.config import settings
+from app.services.observe_service import observe
 
 logger = logging.getLogger(__name__)
 
@@ -29,25 +30,59 @@ class LLMService:
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
+        temp = temperature or self.temperature
+        max_tok = max_tokens or self.max_tokens
         payload = {
             "model": self.model,
             "messages": [{"role": "user", "content": prompt}],
-            "temperature": temperature or self.temperature,
-            "max_tokens": max_tokens or self.max_tokens,
+            "temperature": temp,
+            "max_tokens": max_tok,
         }
-        try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                response = await client.post(
-                    f"{self.api_base}/chat/completions",
-                    headers=headers,
-                    json=payload,
-                )
-                response.raise_for_status()
-                data = response.json()
-                return data["choices"][0]["message"]["content"]
-        except Exception as e:
-            logger.error(f"LLM 生成失败: {e}")
-            return "抱歉，AI 服务暂时不可用，请稍后重试。"
+
+        # ── Langfuse 追踪 ──
+        with observe.generation(
+            name="llm-generate",
+            model=self.model,
+            input=prompt,
+            model_parameters={
+                "temperature": temp,
+                "max_tokens": max_tok,
+                "api_base": self.api_base,
+            },
+        ) as gen:
+            try:
+                async with httpx.AsyncClient(timeout=120.0) as client:
+                    response = await client.post(
+                        f"{self.api_base}/chat/completions",
+                        headers=headers,
+                        json=payload,
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+                    result = data["choices"][0]["message"]["content"]
+
+                    # 尝试记录 token 用量（DeepSeek 可能不返回）
+                    usage = data.get("usage", {})
+                    usage_details = {}
+                    if usage:
+                        usage_details = {
+                            "prompt_tokens": usage.get("prompt_tokens", 0),
+                            "completion_tokens": usage.get("completion_tokens", 0),
+                            "total_tokens": usage.get("total_tokens", 0),
+                        }
+
+                    if gen is not None:
+                        gen.update(output=result, usage_details=usage_details)
+                    return result
+            except Exception as e:
+                logger.error(f"LLM 生成失败: {e}")
+                if gen is not None:
+                    gen.update(
+                        output="",
+                        status_message=str(e),
+                        level="ERROR",
+                    )
+                return "抱歉，AI 服务暂时不可用，请稍后重试。"
 
     async def chat(
         self,
@@ -59,25 +94,57 @@ class LLMService:
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
+        temp = temperature or self.temperature
         payload = {
             "model": self.model,
             "messages": messages,
-            "temperature": temperature or self.temperature,
+            "temperature": temp,
             "max_tokens": self.max_tokens,
         }
-        try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                response = await client.post(
-                    f"{self.api_base}/chat/completions",
-                    headers=headers,
-                    json=payload,
-                )
-                response.raise_for_status()
-                data = response.json()
-                return data["choices"][0]["message"]["content"]
-        except Exception as e:
-            logger.error(f"LLM 对话失败: {e}")
-            return "抱歉，AI 服务暂时不可用，请稍后重试。"
+
+        # ── Langfuse 追踪 ──
+        with observe.generation(
+            name="llm-chat",
+            model=self.model,
+            input={"messages": messages},
+            model_parameters={
+                "temperature": temp,
+                "max_tokens": self.max_tokens,
+                "api_base": self.api_base,
+            },
+        ) as gen:
+            try:
+                async with httpx.AsyncClient(timeout=120.0) as client:
+                    response = await client.post(
+                        f"{self.api_base}/chat/completions",
+                        headers=headers,
+                        json=payload,
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+                    result = data["choices"][0]["message"]["content"]
+
+                    usage = data.get("usage", {})
+                    usage_details = {}
+                    if usage:
+                        usage_details = {
+                            "prompt_tokens": usage.get("prompt_tokens", 0),
+                            "completion_tokens": usage.get("completion_tokens", 0),
+                            "total_tokens": usage.get("total_tokens", 0),
+                        }
+
+                    if gen is not None:
+                        gen.update(output=result, usage_details=usage_details)
+                    return result
+            except Exception as e:
+                logger.error(f"LLM 对话失败: {e}")
+                if gen is not None:
+                    gen.update(
+                        output="",
+                        status_message=str(e),
+                        level="ERROR",
+                    )
+                return "抱歉，AI 服务暂时不可用，请稍后重试。"
 
     async def generate_json(
         self,

@@ -75,6 +75,15 @@ class Settings(BaseSettings):
     # 知识库路径
     KNOWLEDGE_BASE_DIR: str = "../knowledge_base"
 
+    # Langfuse 可观测性配置
+    LANGFUSE_PUBLIC_KEY: str = ""
+    LANGFUSE_SECRET_KEY: str = ""
+    LANGFUSE_BASE_URL: str = "https://cloud.langfuse.com"
+    LANGFUSE_TRACING_ENABLED: bool = True
+    LANGFUSE_SAMPLE_RATE: float = 1.0
+    LANGFUSE_ENVIRONMENT: str = "development"
+    LANGFUSE_RELEASE: str = "1.0.0"
+
     class Config:
         env_file = _env_file
         env_file_encoding = "utf-8"

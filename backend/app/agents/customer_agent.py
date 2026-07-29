@@ -1,7 +1,8 @@
-"""客服 Agent — 基于 ReAct 架构"""
+"""客服 Agent — 基于 ReAct 架构（集成 Langfuse 追踪）"""
 from typing import Dict, Any, Optional, List
 import logging
 from app.agents.base_agent import BaseAgent
+from app.services.observe_service import observe
 
 logger = logging.getLogger(__name__)
 
@@ -38,13 +39,32 @@ class CustomerServiceAgent(BaseAgent):
         return f"Agent {self.agent_id} 已收到消息: {input_text[:50]}..."
 
     async def execute_tool(self, tool_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
-        """执行指定工具"""
+        """执行指定工具 — Langfuse tool 追踪"""
         tool = self.get_tool(tool_name)
         if tool is None:
             return {"success": False, "response": f"未找到工具: {tool_name}"}
-        try:
-            result = await tool.execute(params)
-            return result
-        except Exception as e:
-            logger.error(f"工具执行失败 [{tool_name}]: {e}")
-            return {"success": False, "response": f"工具执行失败: {str(e)}"}
+
+        # ── Langfuse: agent tool 执行追踪 ──
+        with observe.tool(
+            name=f"agent-tool-{tool_name}",
+            input=params,
+        ) as tool_span:
+            try:
+                result = await tool.execute(params)
+                if tool_span is not None:
+                    tool_span.update(
+                        output={
+                            "success": result.get("success", False),
+                            "response": str(result.get("response", ""))[:200],
+                        }
+                    )
+                return result
+            except Exception as e:
+                logger.error(f"工具执行失败 [{tool_name}]: {e}")
+                if tool_span is not None:
+                    tool_span.update(
+                        output={},
+                        status_message=str(e),
+                        level="ERROR",
+                    )
+                return {"success": False, "response": f"工具执行失败: {str(e)}"}

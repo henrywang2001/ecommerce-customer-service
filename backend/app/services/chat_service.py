@@ -1,4 +1,4 @@
-"""对话服务 - 整合意图识别、情感分析、RAG、Agent"""
+"""对话服务 - 整合意图识别、情感分析、RAG、Agent（集成 Langfuse 追踪）"""
 from typing import Dict, Any, Optional, List
 import uuid
 import logging
@@ -6,6 +6,7 @@ from app.services.intent_service import intent_service
 from app.services.sentiment_service import sentiment_service, SentimentType
 from app.services.rag_service import rag_service
 from app.services.llm_service import llm_service
+from app.services.observe_service import observe
 from app.agents.customer_agent import CustomerServiceAgent
 
 logger = logging.getLogger(__name__)
@@ -71,7 +72,7 @@ class ChatService:
         user_id: Optional[int] = None,
         content_type: str = "text",
     ) -> Dict[str, Any]:
-        """处理用户消息并返回回复"""
+        """处理用户消息并返回回复 — 全链路 Langfuse 追踪"""
         logger.info(f"处理消息: session={session_id}, content={content[:50]}...")
 
         # 确保会话存在
@@ -82,69 +83,134 @@ class ChatService:
 
         agent = _agents[session_id]
 
-        # 1. 意图识别
-        intent_result = await intent_service.recognize(content, user_id)
-
-        # 2. 情感分析
-        sent_type, sent_score = await sentiment_service.analyze(content)
-
-        # 3. 根据意图类型处理
-        response_text = ""
-        quick_replies: List[str] = []
-        need_transfer = False
-
-        if intent_result.handler_type == "transfer":
-            # 转人工
-            response_text = await self._handle_transfer(content, intent_result)
-            need_transfer = True
-            quick_replies = ["继续等待", "留言", "电话联系"]
-
-        elif intent_result.handler_type == "tool":
-            # 使用工具处理（订单、退款等）
-            response_text = await self._handle_with_tools(content, intent_result, user_id)
-            quick_replies = self._get_followup_quick_replies(intent_result.intent_code)
-
-        elif intent_result.handler_type == "rag":
-            # RAG 检索回答
-            context = await rag_service.retrieve(content, top_k=3)
-            response_text = await rag_service.generate(content, context)
-            quick_replies = self._get_followup_quick_replies(intent_result.intent_code)
-
-        else:
-            # LLM 直接回答
-            response_text = await self._handle_with_llm(session_id, content, intent_result)
-
-        # 4. 添加情感响应前缀
-        strategy = sentiment_service.get_response_strategy(sent_type, sent_score)
-        if sent_type == SentimentType.NEGATIVE and strategy["prefix"]:
-            response_text = strategy["emoji"] + " " + strategy["prefix"] + response_text
-        elif sent_type == SentimentType.POSITIVE:
-            response_text = strategy["emoji"] + " " + response_text
-
-        # 5. 存储对话历史
-        _conversations[session_id].append({"role": "user", "content": content})
-        _conversations[session_id].append({"role": "assistant", "content": response_text})
-
-        # 更新会话信息
-        if session_id in _sessions:
-            _sessions[session_id]["message_count"] += 1
-            _sessions[session_id]["last_message_at"] = __import__("datetime").datetime.utcnow()
-
-        return {
-            "response": response_text,
-            "intent": {
-                "intent_code": intent_result.intent_code,
-                "intent_name": intent_result.intent_name,
-                "confidence": intent_result.confidence,
-                "entities": [e.model_dump() for e in intent_result.entities],
-                "handler_type": intent_result.handler_type,
-                "priority": intent_result.priority,
+        # ── Langfuse: 创建根 Trace ──
+        with observe.span(
+            name="chat-send-message",
+            input={
+                "session_id": session_id,
+                "user_id": user_id,
+                "content": content,
+                "content_type": content_type,
             },
-            "sentiment": sent_type.value,
-            "sentiment_score": round(sent_score, 2),
-            "quick_replies": quick_replies,
-            "need_transfer": need_transfer,
-        }
+            metadata={
+                "channel": "web",
+                "session_message_count": len(_conversations.get(session_id, [])),
+            },
+        ) as root_span:
+
+            # 1. 意图识别
+            with observe.span(
+                name="intent-recognition",
+                input={"text": content},
+            ) as intent_span:
+                intent_result = await intent_service.recognize(content, user_id)
+                if intent_span is not None:
+                    intent_span.update(
+                        output={
+                            "intent_code": intent_result.intent_code,
+                            "intent_name": intent_result.intent_name,
+                            "confidence": intent_result.confidence,
+                            "handler_type": intent_result.handler_type,
+                        }
+                    )
+
+            # 2. 情感分析
+            with observe.span(
+                name="sentiment-analysis",
+                input={"text": content},
+            ) as sent_span:
+                sent_type, sent_score = await sentiment_service.analyze(content)
+                if sent_span is not None:
+                    sent_span.update(
+                        output={
+                            "sentiment": sent_type.value,
+                            "score": round(sent_score, 2),
+                        }
+                    )
+
+            # 3. 根据意图类型处理
+            response_text = ""
+            quick_replies: List[str] = []
+            need_transfer = False
+
+            if intent_result.handler_type == "transfer":
+                # 转人工
+                with observe.span(name="handle-transfer") as t_span:
+                    response_text = await self._handle_transfer(content, intent_result)
+                    need_transfer = True
+                    quick_replies = ["继续等待", "留言", "电话联系"]
+                    if t_span is not None:
+                        t_span.update(output={"need_transfer": True, "intent": intent_result.intent_code})
+
+            elif intent_result.handler_type == "tool":
+                # 使用工具处理（订单、退款等）
+                with observe.span(
+                    name="handle-with-tools",
+                    input={"intent_code": intent_result.intent_code, "content": content},
+                ) as tool_span:
+                    response_text = await self._handle_with_tools(content, intent_result, user_id)
+                    quick_replies = self._get_followup_quick_replies(intent_result.intent_code)
+                    if tool_span is not None:
+                        tool_span.update(output=response_text[:200])
+
+            elif intent_result.handler_type == "rag":
+                # RAG 检索回答 — rag_service 内部已有追踪
+                context = await rag_service.retrieve(content, top_k=3)
+                response_text = await rag_service.generate(content, context)
+                quick_replies = self._get_followup_quick_replies(intent_result.intent_code)
+
+            else:
+                # LLM 直接回答 — llm_service 内部已有追踪
+                with observe.span(name="handle-with-llm") as llm_span:
+                    response_text = await self._handle_with_llm(session_id, content, intent_result)
+                    if llm_span is not None:
+                        llm_span.update(output=response_text[:200])
+
+            # 4. 添加情感响应前缀
+            strategy = sentiment_service.get_response_strategy(sent_type, sent_score)
+            if sent_type == SentimentType.NEGATIVE and strategy["prefix"]:
+                response_text = strategy["emoji"] + " " + strategy["prefix"] + response_text
+            elif sent_type == SentimentType.POSITIVE:
+                response_text = strategy["emoji"] + " " + response_text
+
+            # 5. 存储对话历史
+            _conversations[session_id].append({"role": "user", "content": content})
+            _conversations[session_id].append({"role": "assistant", "content": response_text})
+
+            # 更新会话信息
+            if session_id in _sessions:
+                _sessions[session_id]["message_count"] += 1
+                _sessions[session_id]["last_message_at"] = __import__("datetime").datetime.utcnow()
+
+            result = {
+                "response": response_text,
+                "intent": {
+                    "intent_code": intent_result.intent_code,
+                    "intent_name": intent_result.intent_name,
+                    "confidence": intent_result.confidence,
+                    "entities": [e.model_dump() for e in intent_result.entities],
+                    "handler_type": intent_result.handler_type,
+                    "priority": intent_result.priority,
+                },
+                "sentiment": sent_type.value,
+                "sentiment_score": round(sent_score, 2),
+                "quick_replies": quick_replies,
+                "need_transfer": need_transfer,
+            }
+
+            if root_span is not None:
+                root_span.update(
+                    output={
+                        "response": response_text[:300],
+                        "intent_code": intent_result.intent_code,
+                        "sentiment": sent_type.value,
+                        "need_transfer": need_transfer,
+                    }
+                )
+
+            # 确保数据刷新到 Langfuse
+            observe.flush()
+            return result
 
     async def _handle_transfer(self, content: str, intent_result) -> str:
         """处理转人工"""

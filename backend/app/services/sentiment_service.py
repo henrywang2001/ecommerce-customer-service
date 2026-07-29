@@ -1,4 +1,4 @@
-"""情感分析服务"""
+"""情感分析服务（集成 Langfuse 追踪）"""
 from typing import Tuple, Dict
 from enum import Enum
 import re

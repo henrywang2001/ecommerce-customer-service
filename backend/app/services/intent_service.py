@@ -1,10 +1,11 @@
-"""意图识别服务"""
+"""意图识别服务（集成 Langfuse 追踪）"""
 from typing import List, Optional, Dict, Any
 import json
 import re
 import logging
 from app.schemas.intent import IntentResult, Entity
 from app.services.llm_service import llm_service
+from app.services.observe_service import observe
 
 logger = logging.getLogger(__name__)
 
@@ -134,7 +135,7 @@ class IntentService:
         return None
 
     async def _llm_understand(self, text: str) -> Optional[IntentResult]:
-        """LLM 深度意图理解"""
+        """LLM 深度意图理解 — Langfuse generation 追踪"""
         prompt = f"""分析以下用户消息的意图，从下列意图中选一个最匹配的：
 可选意图: product_inquiry(商品咨询), order_query(订单查询), refund_request(退款退货),
 complaint(投诉), human_agent(转人工), payment_issue(支付问题),
@@ -144,19 +145,33 @@ shipping_info(配送查询), promotion(促销活动), greeting(问候), fallback
 
 请返回JSON: {{"intent_code": "xxx", "confidence": 0.0-1.0, "reason": "简短理由"}}"""
 
-        result = await llm_service.generate_json(prompt)
-        if result:
-            code = result.get("intent_code", "fallback")
-            config = INTENT_CONFIGS.get(code, INTENT_CONFIGS["fallback"])
-            return IntentResult(
-                intent_code=code,
-                intent_name=config.get("name", code),
-                confidence=float(result.get("confidence", 0.6)),
-                entities=[],
-                handler_type=config["handler"],
-                priority=config["priority"],
-            )
-        return None
+        # ── Langfuse: 意图分类 generation 追踪 ──
+        with observe.generation(
+            name="intent-classify",
+            model=llm_service.model,
+            input=text,
+            model_parameters={"temperature": 0.1, "task": "intent_classification"},
+        ) as gen:
+            result = await llm_service.generate_json(prompt)
+            if result:
+                code = result.get("intent_code", "fallback")
+                config = INTENT_CONFIGS.get(code, INTENT_CONFIGS["fallback"])
+                intent = IntentResult(
+                    intent_code=code,
+                    intent_name=config.get("name", code),
+                    confidence=float(result.get("confidence", 0.6)),
+                    entities=[],
+                    handler_type=config["handler"],
+                    priority=config["priority"],
+                )
+                if gen is not None:
+                    gen.update(output={
+                        "intent_code": code,
+                        "confidence": intent.confidence,
+                        "reason": result.get("reason", ""),
+                    })
+                return intent
+            return None
 
     def _fuse_intents(self, *intents) -> IntentResult:
         """多策略融合：取置信度*优先级最高的"""

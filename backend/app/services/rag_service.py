@@ -1,8 +1,9 @@
-"""RAG 检索增强生成服务"""
+"""RAG 检索增强生成服务（集成 Langfuse 追踪）"""
 from typing import List, Dict, Any, Optional
 import logging
 from app.services.embedding_service import embedding_service
 from app.services.llm_service import llm_service
+from app.services.observe_service import observe
 
 logger = logging.getLogger(__name__)
 
@@ -105,38 +106,63 @@ class RAGService:
         top_k: int = 5,
         filters: Optional[Dict] = None,
     ) -> List[Dict[str, Any]]:
-        """检索相关文档"""
+        """检索相关文档 — Langfuse retriever 追踪"""
         logger.info(f"RAG 检索: {query[:50]}...")
 
-        chroma = await self._get_chroma()
-        if chroma is not None:
-            try:
-                from app.core.config import settings
-                collection = chroma.get_or_create_collection(
-                    name=settings.CHROMA_COLLECTION,
-                )
-                if collection.count() > 0:
-                    query_embedding = await embedding_service.encode_single(query)
-                    chroma_results = collection.query(
-                        query_embeddings=[query_embedding],
-                        n_results=top_k,
+        # ── Langfuse: retriever 追踪 ──
+        with observe.retriever(
+            name="rag-search",
+            input={"query": query, "top_k": top_k, "filters": filters},
+        ) as ret:
+            chroma = await self._get_chroma()
+            if chroma is not None:
+                try:
+                    from app.core.config import settings
+                    collection = chroma.get_or_create_collection(
+                        name=settings.CHROMA_COLLECTION,
                     )
-                    results = []
-                    if chroma_results["ids"] and chroma_results["ids"][0]:
-                        for i, doc_id in enumerate(chroma_results["ids"][0]):
-                            metadata = chroma_results["metadatas"][0][i] if chroma_results["metadatas"] else {}
-                            results.append({
-                                "score": 1.0 - (chroma_results["distances"][0][i] if chroma_results.get("distances") else 0.1 * i),
-                                "category": metadata.get("category", ""),
-                                "question": metadata.get("question", ""),
-                                "answer": chroma_results["documents"][0][i] if chroma_results["documents"] else "",
-                            })
-                        return results
-            except Exception as e:
-                logger.warning(f"ChromaDB 查询失败: {e}")
+                    if collection.count() > 0:
+                        query_embedding = await embedding_service.encode_single(query)
+                        chroma_results = collection.query(
+                            query_embeddings=[query_embedding],
+                            n_results=top_k,
+                        )
+                        results = []
+                        if chroma_results["ids"] and chroma_results["ids"][0]:
+                            for i, doc_id in enumerate(chroma_results["ids"][0]):
+                                metadata = chroma_results["metadatas"][0][i] if chroma_results["metadatas"] else {}
+                                score = 1.0 - (chroma_results["distances"][0][i] if chroma_results.get("distances") else 0.1 * i)
+                                results.append({
+                                    "score": score,
+                                    "category": metadata.get("category", ""),
+                                    "question": metadata.get("question", ""),
+                                    "answer": chroma_results["documents"][0][i] if chroma_results["documents"] else "",
+                                })
 
-        # Fallback: 使用内置知识库做关键词匹配
-        return self._keyword_search(query, top_k)
+                            if ret is not None:
+                                ret.update(
+                                    output={
+                                        "result_count": len(results),
+                                        "top_scores": [r["score"] for r in results[:3]],
+                                        "source": "chromadb",
+                                    },
+                                    metadata={"embedding_model": settings.EMBEDDING_MODEL},
+                                )
+                            return results
+                except Exception as e:
+                    logger.warning(f"ChromaDB 查询失败: {e}")
+
+            # Fallback: 使用内置知识库做关键词匹配
+            results = self._keyword_search(query, top_k)
+            if ret is not None:
+                ret.update(
+                    output={
+                        "result_count": len(results),
+                        "top_scores": [r["score"] for r in results[:3]],
+                        "source": "built-in-keyword",
+                    }
+                )
+            return results
 
     def _keyword_search(self, query: str, top_k: int) -> List[Dict[str, Any]]:
         """基于关键词的内置知识库检索"""
@@ -174,9 +200,10 @@ class RAGService:
         return "\n\n".join(parts)
 
     async def generate(self, query: str, context: str) -> str:
-        """基于检索结果生成回答"""
+        """基于检索结果生成回答 — Langfuse generation 追踪"""
         if not context:
             return await llm_service.generate(f"请简洁回答用户问题：{query}")
+
         prompt = (
             f"基于以下知识库内容回答用户问题。如果知识库中没有相关信息，"
             f"请直接告知用户并建议咨询人工客服。\n\n"
@@ -184,7 +211,21 @@ class RAGService:
             f"用户问题：{query}\n\n"
             f"要求：直接回答，简洁专业。如果信息充分则不要提及'根据知识库'等字眼。"
         )
-        return await llm_service.generate(prompt)
+
+        # ── Langfuse: rag-generation 追踪 ──
+        with observe.generation(
+            name="rag-generate",
+            model=llm_service.model,
+            input={"query": query, "context_length": len(context)},
+            model_parameters={
+                "temperature": llm_service.temperature,
+                "max_tokens": llm_service.max_tokens,
+            },
+        ) as gen:
+            result = await llm_service.generate(prompt)
+            if gen is not None:
+                gen.update(output=result)
+            return result
 
     async def add_document(self, question: str, answer: str, category: str = "", keywords: str = "") -> str:
         """添加文档到向量数据库"""

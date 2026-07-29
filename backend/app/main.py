@@ -27,6 +27,20 @@ async def lifespan(app: FastAPI):
     logger.info(f"{'='*50}")
     logger.info("应用启动中...")
 
+    # ── 初始化 Langfuse 可观测性 ──
+    from app.services.observe_service import observe
+    if observe.enabled:
+        logger.info(
+            "Langfuse 可观测性已启用: %s (env=%s)",
+            settings.LANGFUSE_BASE_URL,
+            settings.LANGFUSE_ENVIRONMENT,
+        )
+    else:
+        logger.warning(
+            "Langfuse 未启用（未配置 API Key 或已禁用）。"
+            "请在 .env 中设置 LANGFUSE_PUBLIC_KEY 和 LANGFUSE_SECRET_KEY"
+        )
+
     # 启动时创建数据库表（可选，如果 MySQL 可用）
     try:
         from app.core.database import engine, Base
@@ -42,6 +56,10 @@ async def lifespan(app: FastAPI):
     logger.info("应用关闭中...")
     from app.core.database import engine
     await engine.dispose()
+
+    # ── 关闭时刷新 Langfuse ──
+    observe.flush()
+    logger.info("Langfuse 追踪数据已刷新")
     logger.info("应用已关闭")
 
 
