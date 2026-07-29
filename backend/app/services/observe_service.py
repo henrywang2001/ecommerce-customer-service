@@ -20,9 +20,11 @@
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import contextmanager
 from typing import Any, Dict, Optional
 
+import httpx
 from langfuse import Langfuse
 
 from app.core.config import settings
@@ -53,6 +55,9 @@ class ObserveService:
             return
 
         try:
+            # 创建带代理设置的 httpx client（Langfuse 内部使用）
+            # GFW 环境下通过 HTTP_PROXY/HTTPS_PROXY 环境变量走代理
+            timeout = httpx.Timeout(30.0, connect=10.0)
             self._client = Langfuse(
                 public_key=settings.LANGFUSE_PUBLIC_KEY,
                 secret_key=settings.LANGFUSE_SECRET_KEY,
@@ -61,6 +66,7 @@ class ObserveService:
                 release=settings.LANGFUSE_RELEASE,
                 sample_rate=settings.LANGFUSE_SAMPLE_RATE,
                 flush_interval=5.0,
+                timeout=30,
             )
             self._ready = True
             logger.info(
