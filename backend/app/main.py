@@ -43,8 +43,9 @@ async def lifespan(app: FastAPI):
 
     # 启动时创建数据库表（可选，如果 MySQL 可用）
     try:
-        from app.core.database import engine, Base
-        async with engine.begin() as conn:
+        from app.core.database import _get_engine, Base
+        eng = _get_engine()
+        async with eng.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         logger.info("数据库表已就绪")
     except Exception as e:
@@ -54,8 +55,12 @@ async def lifespan(app: FastAPI):
     yield
 
     logger.info("应用关闭中...")
-    from app.core.database import engine
-    await engine.dispose()
+    try:
+        from app.core.database import _get_engine
+        eng = _get_engine()
+        await eng.dispose()
+    except Exception:
+        pass
 
     # ── 关闭时刷新 Langfuse ──
     observe.flush()

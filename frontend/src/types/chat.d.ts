@@ -8,6 +8,7 @@ export interface Message {
   content_type?: string
   createdAt: string
   isUser: boolean
+  isError?: boolean
   intent?: IntentInfo
   sentiment?: SentimentType
   sentiment_score?: number

@@ -86,6 +86,7 @@ export const useChatStore = defineStore('chat', () => {
         content: '抱歉，消息发送失败，请稍后重试。',
         createdAt: new Date().toISOString(),
         isUser: false,
+        isError: true,
       })
     } finally {
       isTyping.value = false
@@ -95,7 +96,7 @@ export const useChatStore = defineStore('chat', () => {
   async function loadHistory() {
     if (!sessionId.value) return
     try {
-      const history = await chatApi.getHistory(sessionId.value)
+      const history = await chatApi.getHistory(sessionId.value) as any
       messages.value = history.messages.map((m: any) => ({
         ...m,
         isUser: m.sender_type === 'user',
