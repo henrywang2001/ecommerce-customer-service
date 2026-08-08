@@ -9,8 +9,6 @@
         </span>
       </div>
       <div class="header-actions">
-        <el-button size="small" class="nav-btn" @click="$router.push('/dashboard')">📊 看板</el-button>
-        <el-button size="small" class="nav-btn" @click="$router.push('/history')">📋 历史</el-button>
         <el-button size="small" class="nav-btn theme-toggle" @click="toggleTheme">
           {{ isDark ? '☀️' : '🌙' }}
         </el-button>
@@ -30,7 +28,7 @@
       <!-- 欢迎消息 -->
       <div v-if="chatStore.messages.length === 0" class="welcome">
         <div class="welcome-icon">🤖</div>
-        <h2>您好，我是智能客服小e</h2>
+        <h2>您好！我是智能客服小e，很高兴为您服务～请问有什么可以帮到您的？</h2>
         <p>我可以帮您查询订单、了解商品信息、解答售后问题等</p>
         <div class="quick-services">
           <el-button v-for="s in quickServices" :key="s.code" @click="sendMessage(s.text)" class="quick-service-btn">
@@ -48,7 +46,7 @@
       >
         <div class="avatar">{{ msg.isUser ? '👤' : '🤖' }}</div>
         <div class="bubble" :class="[msg.isUser ? 'bubble-user' : 'bubble-bot', { 'bubble-error': msg.isError }]">
-          <div class="message-text" v-html="formatContent(msg.content)"></div>
+          <div class="message-text">{{ msg.content }}</div>
           <div class="message-time">{{ formatTime(msg.createdAt) }}</div>
           <div v-if="msg.intent && !msg.isUser" class="intent-tag">
             <span class="intent-dot"></span>
@@ -106,8 +104,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick, onMounted } from 'vue'
+import { ref, computed, nextTick } from 'vue'
 import { useChatStore } from '@/stores/chat'
+
+// F1 守卫：必须显式声明组件名，否则 keep-alive include="ChatPage" 无法命中
+defineOptions({ name: 'ChatPage' })
 
 const chatStore = useChatStore()
 const inputText = ref('')
@@ -173,19 +174,6 @@ function formatTime(timeStr: string): string {
   const date = new Date(timeStr)
   return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
 }
-
-const urlRegex = /(https?:\/\/[^\s<]+)/g
-
-function formatContent(content: string): string {
-  return content
-    .replace(urlRegex, '<a href="$1" target="_blank" rel="noopener">$1</a>')
-    .replace(/\n/g, '<br>')
-    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-}
-
-onMounted(() => {
-  chatStore.initSession()
-})
 </script>
 
 <style scoped>
@@ -341,7 +329,7 @@ onMounted(() => {
   box-shadow: 0 1px 4px rgba(244, 67, 54, 0.15) !important;
 }
 
-.message-text { font-size: 14px; word-break: break-word; }
+.message-text { font-size: 14px; word-break: break-word; white-space: pre-wrap; }
 .message-text :deep(a) {
   color: inherit;
   text-decoration: underline;

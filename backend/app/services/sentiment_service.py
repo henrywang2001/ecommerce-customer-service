@@ -81,21 +81,29 @@ class SentimentService:
         return False
 
     def _rule_analysis(self, text: str) -> float:
-        """规则辅助分析"""
+        """规则辅助分析（B4：负向修正，允许规则分为负）"""
         score = 0.0
-        # 重复标点/字符可能表示强烈情绪
+        # 重复标点/字符可能表示强烈情绪（连续 3 个及以上）
         if re.findall(r'([!！?？])\1{2,}', text):
             score += 0.15
         # 全大写（英文）可能表示强调
         if re.search(r'[A-Z]{4,}', text):
             score += 0.15
-        # 感叹号数量
+        # 感叹号数量 —— 仅在文本含正面词时才加分（B4：纯感叹号不虚高）
+        has_positive = any(pos in text for pos in self.POSITIVE_WORDS)
         exclaim_count = text.count("!") + text.count("！")
-        score += exclaim_count * 0.05
+        if exclaim_count > 0 and has_positive:
+            score += exclaim_count * 0.05
         # 问号+感叹号混合（强烈不满）
         if re.search(r'[?？]+[!！]+|[!！]+[?？]+', text):
             score += 0.2
-        return min(0.5, score)  # 规则分不超过 0.5
+        # 含负面词且出现连续/多个感叹号时，做负向修正（B4）
+        has_negative = any(neg in text for neg in self.NEGATIVE_WORDS)
+        multi_exclaim = bool(re.findall(r'([!！])\1{1,}', text)) or exclaim_count >= 2
+        if has_negative and multi_exclaim:
+            score -= 0.2
+        # 允许规则分为负，使强负面场景最终得分可转负（B4）
+        return max(-0.5, score)
 
     def _score_to_type(self, score: float) -> SentimentType:
         """得分转类型"""

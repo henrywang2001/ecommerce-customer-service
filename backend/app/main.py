@@ -7,6 +7,11 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.api.v1 import chat, intent, agent, knowledge, order, product, analytics
+from starlette.requests import Request
+from fastapi.responses import JSONResponse
+
+from app.utils.rate_limiter import rate_limiter
+from app.core.security import decode_access_token
 
 # 配置日志
 logging.basicConfig(
@@ -92,6 +97,42 @@ app.include_router(knowledge.router, prefix="/api/v1/knowledge", tags=["知识�
 app.include_router(order.router, prefix="/api/v1/order", tags=["订单服务"])
 app.include_router(product.router, prefix="/api/v1/product", tags=["商品服务"])
 app.include_router(analytics.router, prefix="/api/v1/analytics", tags=["数据分析"])
+
+
+# ── 全局限流中间件（防滥用）──
+@app.middleware("http")
+async def ratelimit_middleware(request: Request, call_next):
+    """复用既有限流器，对匿名/高频请求返回 429。
+
+    不修改 rate_limiter 本身，仅在此处接线使其对全部请求生效。
+    """
+    client_ip = request.client.host if request.client else "anonymous"
+    if not rate_limiter.is_allowed(client_ip):
+        return JSONResponse(status_code=429, content={"detail": "请求过于频繁，请稍后再试。"})
+    return await call_next(request)
+
+
+# ── 全局鉴权中间件（H2：生产环境开关）──
+PUBLIC_PATHS = {"/", "/health", "/docs", "/openapi.json", "/redoc"}
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    """当 REQUIRE_AUTH=True 时，全站（白名单除外）需 Bearer JWT，否则 401；默认关闭。"""
+    if not settings.REQUIRE_AUTH:
+        return await call_next(request)
+
+    path = request.url.path
+    if path in PUBLIC_PATHS or path.startswith(("/docs", "/openapi", "/redoc")):
+        return await call_next(request)
+
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return JSONResponse(status_code=401, content={"detail": "未认证或认证失效，请提供 Bearer 令牌。"})
+    payload = decode_access_token(auth[len("Bearer "):])
+    if not payload:
+        return JSONResponse(status_code=401, content={"detail": "无效或过期的令牌。"})
+    return await call_next(request)
 
 
 @app.get("/")

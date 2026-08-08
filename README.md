@@ -46,26 +46,33 @@ ecommerce-customer-service/
 │   │   │   ├── llm_service.py         # LLM 服务（DeepSeek）
 │   │   │   ├── embedding_service.py   # Embedding 服务（千问）
 │   │   │   ├── intent_service.py      # 意图识别（多策略融合）
-│   │   │   ├── sentiment_service.py   # 情感分析（词典+规则）
-│   │   │   ├── rag_service.py         # RAG 检索增强生成
-│   │   │   ├── chat_service.py        # 对话服务（整合所有模块）
+│   │   │   ├── sentiment_service.py   # 情感分析（词典+规则：B4负向修正）
+│   │   │   ├── rag_service.py         # RAG 检索增强生成（双路检索：向量+关键词）
+│   │   │   ├── chat_service.py        # 对话服务（会话生命周期：TTL淘汰+LRU上限）
 │   │   │   └── observe_service.py     # Langfuse 可观测性服务
 │   │   ├── agents/            # Agent 系统
 │   │   │   ├── base_agent.py          # Agent 基类
 │   │   │   ├── customer_agent.py      # 客服 Agent（ReAct）
-│   │   │   ├── tools/                 # 工具集（6个）
+│   │   │   ├── tools/                 # 工具集（6个，已接线工具分发）
 │   │   │   └── prompts/               # 提示词模板
 │   │   ├── nlu/               # NLU 模块
 │   │   ├── rag/               # RAG 模块（文档加载/分块/存储/检索）
 │   │   └── utils/             # 工具（日志/缓存/限流）
+│   ├── tests/                  # 测试
+│   │   ├── conftest.py         # 测试夹具
+│   │   ├── test_api.py         # API 测试
+│   │   ├── test_chat_service.py # 对话服务测试
+│   │   └── test_rag.py        # RAG 测试
 │   ├── scripts/               # 初始化脚本
 │   ├── requirements.txt
 │   └── .env                   # 环境变量（已配置 API Key）
 ├── frontend/                   # Vue3 前端
 │   ├── src/
-│   │   ├── views/             # ChatPage / Dashboard / KnowledgeBase / SessionHistory
-│   │   ├── stores/            # Pinia 状态管理
+│   │   ├── views/             # ChatPage / Dashboard / KnowledgeBase
+│   │   ├── layouts/           # MainLayout（侧边栏+内容区）
+│   │   ├── stores/            # Pinia 状态管理（含本地缓存 B1）
 │   │   ├── api/               # API 封装
+│   │   ├── types/             # TypeScript 类型定义
 │   │   └── router/            # Vue Router
 │   ├── package.json
 │   └── vite.config.ts
@@ -84,31 +91,52 @@ ecommerce-customer-service/
 项目集成了 Langfuse 全链路追踪，每次对话请求自动记录完整调用链：
 
 ```
-chat-send-message
-├── intent-recognition      # 意图识别
-│   └── intent-classify     # LLM 意图分类 (generation)
-├── sentiment-analysis      # 情感分析
-├── handle-xxx              # 意图分发
-│   ├── rag-search          # RAG 向量检索 (retriever)
-│   │   └── text-embedding  # 查询向量化 (embedding)
-│   ├── rag-generate        # RAG 生成回答 (generation)
-│   ├── llm-chat            # LLM 多轮对话 (generation)
-│   └── agent-tool-*        # Agent 工具调用 (tool)
+chat-send-message (根 span)
+├── intent-recognition        # 意图识别 span
+│   └── intent-classify       # LLM 意图分类 generation
+├── sentiment-analysis        # 情感分析 span
+├── handle-with-tools         # 工具处理 span
+│   ├── rag-search            # RAG 检索 retriever
+│   │   └── text-embedding    # 向量化 embedding
+│   ├── rag-generate          # RAG 生成 generation
+│   └── agent-tool-*          # Agent 工具执行 tool
+├── handle-with-llm           # LLM 直接回复
+│   └── llm-chat              # 多轮对话 generation
+└── handle-transfer           # 转人工 span
 ```
+
+### 架构亮点
+
+| 模块 | 特性 | 说明 |
+|------|------|------|
+| 全局中间件 | 限流 + 鉴权 | IP 频率限制防滥用，JWT 鉴权可按需开启 |
+| 会话生命周期 | TTL 淘汰 + LRU 上限 | 24h 空闲自动失效，200 会话容量上限 |
+| RAG 双路检索 | 向量检索 + 关键词匹配 | ChromaDB 与内置知识库互补，零向量自动降级 |
+| Agent 工具接线 | ReAct 框架 | 6 个工具全量接入，转人工/Ticket/RAG 均走工具分发 |
+| 前端侧边栏 | 会话列表 + 缓存 | 本地持久化最近 10 个会话，恢复免后端调用 |
+| 安全 | .env 密钥隔离 + .gitignore | API Key 不含在版本控制中 |
 
 ### 配置
 
-在 `backend/.env` 中设置：
+在 `backend/.env` 中设置（所有第三方服务的 API Key）：
 
 ```bash
+# LLM
+LLM_API_KEY=your-deepseek-api-key
+LLM_MODEL=deepseek-v4-flash
+
+# Embedding
+EMBEDDING_API_KEY=your-dashscope-api-key
+
+# Langfuse 可观测性（可选）
 LANGFUSE_PUBLIC_KEY=pk-lf-...
 LANGFUSE_SECRET_KEY=sk-lf-...
-LANGFUSE_BASE_URL=https://cloud.langfuse.com   # 或自托管地址
+LANGFUSE_BASE_URL=https://cloud.langfuse.com
 LANGFUSE_TRACING_ENABLED=true
-LANGFUSE_ENVIRONMENT=development
 ```
 
 > 未配置 API Key 时追踪自动降级为 no-op，不影响业务运行。
+> 参考 `backend/.env.example` 了解所有可配置项。
 
 ### 查看追踪
 

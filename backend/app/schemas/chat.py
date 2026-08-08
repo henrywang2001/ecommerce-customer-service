@@ -70,6 +70,7 @@ class SessionInfo(BaseModel):
     status: str
     started_at: datetime
     message_count: int = 0
+    last_message_at: Optional[datetime] = None
     bot_name: str = "智能客服小e"
 
 
@@ -77,6 +78,7 @@ class CreateSessionResponse(BaseModel):
     session: SessionInfo
     welcome_message: str = "您好！我是智能客服小e，很高兴为您服务～请问有什么可以帮到您的？"
     quick_replies: List[str] = Field(default_factory=list)
+    initial_response: Optional[dict] = None
 
 
 class MessageItem(BaseModel):
@@ -95,10 +97,15 @@ class MessageItem(BaseModel):
 
 
 class MessageListResponse(BaseModel):
-    messages: List[MessageItem]
+    items: List[MessageItem]
     total: int
     page: int
     page_size: int
+
+
+class SessionListResponse(BaseModel):
+    sessions: List[SessionInfo]
+    total: int
 
 
 class RateSessionResponse(BaseModel):

@@ -4,6 +4,7 @@ from app.schemas.chat import (
     SendMessageRequest, SendMessageResponse,
     CreateSessionRequest, CreateSessionResponse,
     MessageListResponse, MessageItem,
+    SessionListResponse,
     RateSessionRequest, RateSessionResponse,
     TransferRequest,
 )
@@ -56,3 +57,17 @@ async def rate_session(req: RateSessionRequest):
     """评价会话"""
     result = await chat_service.rate_session(req.session_id, req.score, req.comment)
     return RateSessionResponse(**result)
+
+
+@router.get("/sessions", response_model=SessionListResponse)
+async def list_sessions():
+    """获取会话列表"""
+    result = await chat_service.list_sessions()
+    return SessionListResponse(**result)
+
+
+@router.delete("/sessions/{session_id}")
+async def delete_session(session_id: str):
+    """删除会话（含内存中的会话元数据、对话记录、Agent 实例）"""
+    deleted = await chat_service.delete_session(session_id)
+    return {"success": deleted, "deleted_id": session_id}

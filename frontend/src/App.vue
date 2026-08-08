@@ -108,8 +108,7 @@ html, body, #app {
 /* ===== 深色模式覆盖 ===== */
 body.dark .chat-page,
 body.dark .dashboard-page,
-body.dark .kb-page,
-body.dark .history-page {
+body.dark .kb-page {
   background: var(--bg-primary);
 }
 body.dark .chat-header,

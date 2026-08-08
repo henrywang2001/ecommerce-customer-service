@@ -1,6 +1,7 @@
 """对话服务 - 整合意图识别、情感分析、RAG、Agent（集成 Langfuse 追踪）"""
 from typing import Dict, Any, Optional, List
 import uuid
+import datetime
 import logging
 from app.services.intent_service import intent_service
 from app.services.sentiment_service import sentiment_service, SentimentType
@@ -13,8 +14,12 @@ logger = logging.getLogger(__name__)
 
 # 内存中的会话存储（生产环境应使用 Redis）
 _sessions: Dict[str, Dict[str, Any]] = {}
-_conversations: Dict[str, List[Dict[str, str]]] = {}
+_conversations: Dict[str, List[Dict[str, Any]]] = {}
 _agents: Dict[str, CustomerServiceAgent] = {}
+
+# 会话生命周期治理（M1）：容量上限 + 空闲 TTL 惰性淘汰
+MAX_SESSIONS: int = 200
+SESSION_TTL_SECONDS: int = 86400  # 24 小时
 
 
 class ChatService:
@@ -27,13 +32,15 @@ class ChatService:
         initial_message: Optional[str] = None,
     ) -> Dict[str, Any]:
         """创建新会话"""
+        self._purge_expired()
+
         session_id = f"sess_{uuid.uuid4().hex[:12]}"
-        import datetime
         session_info = {
             "session_id": session_id,
             "user_id": user_id,
             "status": "active",
-            "started_at": datetime.datetime.utcnow(),
+            "started_at": datetime.datetime.now(datetime.timezone.utc),
+            "last_message_at": datetime.datetime.now(datetime.timezone.utc),
             "message_count": 0,
             "bot_name": "智能客服小e",
         }
@@ -44,6 +51,7 @@ class ChatService:
         agent = CustomerServiceAgent(session_id, user_id)
         _agents[session_id] = agent
 
+        self._evict_lru()
         logger.info(f"会话已创建: {session_id}")
 
         # 欢迎消息
@@ -82,6 +90,9 @@ class ChatService:
             _agents[session_id] = CustomerServiceAgent(session_id, user_id)
 
         agent = _agents[session_id]
+
+        # 惰性淘汰过期会话（M1）
+        self._purge_expired()
 
         # ── Langfuse: 创建根 Trace ──
         with observe.span(
@@ -134,9 +145,10 @@ class ChatService:
             need_transfer = False
 
             if intent_result.handler_type == "transfer":
-                # 转人工
+                # 转人工（委派 TransferHumanTool）
                 with observe.span(name="handle-transfer") as t_span:
-                    response_text = await self._handle_transfer(content, intent_result)
+                    reason = "投诉" if intent_result.intent_code == "complaint" else "用户主动请求"
+                    response_text = await self._handle_transfer(session_id, content, intent_result, user_id, reason)
                     need_transfer = True
                     quick_replies = ["继续等待", "留言", "电话联系"]
                     if t_span is not None:
@@ -148,15 +160,19 @@ class ChatService:
                     name="handle-with-tools",
                     input={"intent_code": intent_result.intent_code, "content": content},
                 ) as tool_span:
-                    response_text = await self._handle_with_tools(content, intent_result, user_id)
+                    response_text = await self._handle_with_tools(session_id, content, intent_result, user_id)
                     quick_replies = self._get_followup_quick_replies(intent_result.intent_code)
                     if tool_span is not None:
                         tool_span.update(output=response_text[:200])
 
             elif intent_result.handler_type == "rag":
-                # RAG 检索回答 — rag_service 内部已有追踪
-                context = await rag_service.retrieve(content, top_k=3)
-                response_text = await rag_service.generate(content, context)
+                # 知识检索：优先走 SearchKnowledgeTool（已接线），失败回退 LLM 生成
+                tool_res = await agent.execute_tool("search_knowledge", {"user_message": content, "top_k": 3})
+                if tool_res.get("success") and tool_res.get("results"):
+                    response_text = tool_res.get("response", "")
+                else:
+                    context = await rag_service.retrieve(content, top_k=3)
+                    response_text = await rag_service.generate(content, context)
                 quick_replies = self._get_followup_quick_replies(intent_result.intent_code)
 
             else:
@@ -173,27 +189,46 @@ class ChatService:
             elif sent_type == SentimentType.POSITIVE:
                 response_text = strategy["emoji"] + " " + response_text
 
-            # 5. 存储对话历史
-            _conversations[session_id].append({"role": "user", "content": content})
-            _conversations[session_id].append({"role": "assistant", "content": response_text})
+            # 构造统一的意图/情感载荷（供存储与返回复用，避免后续前向引用 result）
+            intent_payload = {
+                "intent_code": intent_result.intent_code,
+                "intent_name": intent_result.intent_name,
+                "confidence": intent_result.confidence,
+                "entities": [e.model_dump() for e in intent_result.entities],
+                "handler_type": intent_result.handler_type,
+                "priority": intent_result.priority,
+            }
+            sentiment_value = sent_type.value
+            sentiment_score_value = round(sent_score, 2)
+
+            # 5. 存储对话历史（B2/B5：落库 intent/sentiment/sentiment_score）
+            _conversations[session_id].append({
+                "role": "user",
+                "content": content,
+                "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "intent": None,
+                "sentiment": None,
+                "sentiment_score": None,
+            })
+            _conversations[session_id].append({
+                "role": "assistant",
+                "content": response_text,
+                "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "intent": intent_payload,
+                "sentiment": sentiment_value,
+                "sentiment_score": sentiment_score_value,
+            })
 
             # 更新会话信息
             if session_id in _sessions:
                 _sessions[session_id]["message_count"] += 1
-                _sessions[session_id]["last_message_at"] = __import__("datetime").datetime.utcnow()
+                _sessions[session_id]["last_message_at"] = datetime.datetime.now(datetime.timezone.utc)
 
             result = {
                 "response": response_text,
-                "intent": {
-                    "intent_code": intent_result.intent_code,
-                    "intent_name": intent_result.intent_name,
-                    "confidence": intent_result.confidence,
-                    "entities": [e.model_dump() for e in intent_result.entities],
-                    "handler_type": intent_result.handler_type,
-                    "priority": intent_result.priority,
-                },
-                "sentiment": sent_type.value,
-                "sentiment_score": round(sent_score, 2),
+                "intent": intent_payload,
+                "sentiment": sentiment_value,
+                "sentiment_score": sentiment_score_value,
                 "quick_replies": quick_replies,
                 "need_transfer": need_transfer,
             }
@@ -208,77 +243,59 @@ class ChatService:
                     }
                 )
 
-            # 确保数据刷新到 Langfuse
-            observe.flush()
             return result
 
-    async def _handle_transfer(self, content: str, intent_result) -> str:
-        """处理转人工"""
-        if intent_result.intent_code == "complaint":
-            return (
-                "非常抱歉给您带来不好的体验，已为您优先转接投诉处理专员。\n\n"
-                "📞 如需紧急处理，可拨打客服热线 400-123-4567\n\n"
-                "当前预计等待时间约 2 分钟，客服专员将尽快接入…"
+    async def _handle_transfer(self, session_id: str, content: str, intent_result, user_id: Optional[int], reason: str = "用户主动请求") -> str:
+        """转人工：委派 TransferHumanTool（ReAct 工具接线）"""
+        agent = _agents.get(session_id)
+        if agent is not None:
+            result = await agent.execute_tool(
+                "transfer_human",
+                {"session_id": session_id, "user_id": user_id, "reason": reason},
             )
-        return (
-            "已为您转接人工客服，请稍候～\n\n"
-            "💡 温馨提示：请保持当前页面，客服将自动接入。\n"
-            "如需紧急帮助，可拨打客服热线 400-123-4567"
-        )
+            return result.get("response", "已为您转接人工客服，请稍候～")
+        return "已为您转接人工客服，请稍候～"
 
-    async def _handle_with_tools(self, content: str, intent_result, user_id: Optional[int]) -> str:
-        """使用工具处理（Mock 实现，实际会调用 Agent 工具）"""
+    async def _handle_with_tools(self, session_id: str, content: str, intent_result, user_id: Optional[int]) -> str:
+        """按意图码分发到对应 Agent 工具（ReAct 工具接线）"""
         code = intent_result.intent_code
+        agent = _agents.get(session_id)
+        if agent is None:
+            return "正在为您处理，请稍候…"
 
-        if code == "order_query":
-            # 提取订单号
-            import re
-            match = re.search(r'ORDER[\w]{8,20}', content, re.IGNORECASE)
-            if match:
-                order_no = match.group().upper()
-                return (
-                    f"📦 订单详情\n━━━━━━━━━━━━━━━━━━━━\n"
-                    f"订单号：{order_no}\n"
-                    f"商品：Apple iPhone 15 Pro Max 256GB ×1\n"
-                    f"实付金额：¥9,599.00\n"
-                    f"订单状态：🚚 已发货\n"
-                    f"快递公司：顺丰速运\n"
-                    f"运单号：SF1234567890\n"
-                    f"预计送达：2-3 天内\n"
-                    f"━━━━━━━━━━━━━━━━━━━━\n"
-                    f"📍 收货人：张先生 138****6789\n"
-                    f"收货地址：北京市朝阳区建国路88号"
-                )
-            return (
-                "📋 您的近期订单：\n\n"
-                "1. 🚚 ORDER20260315001 Apple iPhone 15 Pro Max — ¥9,599 已发货\n"
-                "2. 💳 ORDER20260401001 戴森吹风机 HD15 — ¥2,699 待发货\n"
-                "3. ✅ ORDER20260310005 Nike Air Jordan 1 — ¥1,499 已收货\n\n"
-                '回复「查订单 [订单号]」可查看详情'
-            )
-
-        if code == "refund_request":
-            return (
-                "📋 退款政策说明：\n\n"
-                "【退款时效】\n"
-                "• 取消订单：1-3 个工作日原路退回\n"
-                "• 退货退款：收到商品后 1-3 个工作日处理\n"
-                "• 退款路径：退回原支付账户\n\n"
-                "【申请流程】\n"
-                "1. 在订单详情页点击「申请退款」\n"
-                "2. 选择退款原因并提交\n"
-                "3. 等待审核（通常1小时内）\n\n"
-                "需要帮您提交退款申请吗？请提供订单号。"
-            )
-
+        tool_map = {
+            "order_query": ("query_order", {"user_message": content, "user_id": user_id}),
+            "refund_request": ("refund", {"user_message": content, "user_id": user_id}),
+            "product_inquiry": ("query_product", {"user_message": content}),
+            "ticket_create": (
+                "create_ticket",
+                {
+                    "session_id": session_id,
+                    "user_id": user_id,
+                    "type": "consult",
+                    "title": (content or "用户咨询")[:20],
+                    "content": content or "",
+                },
+            ),
+        }
+        if code in tool_map:
+            tool_name, params = tool_map[code]
+            result = await agent.execute_tool(tool_name, params)
+            return result.get("response", "正在为您处理，请稍候…")
         return "正在为您处理，请稍候…"
 
     async def _handle_with_llm(self, session_id: str, content: str, intent_result) -> str:
         """使用 LLM 直接回答"""
         history = _conversations.get(session_id, [])
+        # 存储的每条消息现已含 intent/sentiment 等额外字段，
+        # 发送给 LLM 时必须映射为纯 {role, content}，避免多余字段污染输入。
+        clean_history = [
+            {"role": m["role"], "content": m["content"]}
+            for m in history[-6:]  # 最近 3 轮对话
+        ]
         messages = [
             {"role": "system", "content": self._get_system_prompt()},
-            *history[-6:],  # 最近 3 轮对话
+            *clean_history,
             {"role": "user", "content": content},
         ]
         return await llm_service.chat(messages)
@@ -320,7 +337,7 @@ class ChatService:
         end = start + page_size
         page_messages = all_messages[start:end]
 
-        # 转换为带 ID 的格式
+        # 转换为带 ID 的格式（B5：回读 intent/sentiment/sentiment_score）
         result = []
         for i, msg in enumerate(page_messages):
             result.append({
@@ -329,10 +346,67 @@ class ChatService:
                 "sender_type": "user" if msg["role"] == "user" else "bot",
                 "content": msg["content"],
                 "content_type": "text",
-                "created_at": "",  # 简化处理
+                "intent": msg.get("intent"),
+                "sentiment": msg.get("sentiment"),
+                "sentiment_score": msg.get("sentiment_score"),
+                "created_at": msg.get("created_at", ""),
             })
 
-        return {"messages": result, "total": total, "page": page, "page_size": page_size}
+        return {"items": result, "total": total, "page": page, "page_size": page_size}
+
+    async def list_sessions(self) -> Dict[str, Any]:
+        """获取会话列表"""
+        sessions = []
+        for sid, info in _sessions.items():
+            sessions.append({
+                "session_id": info.get("session_id", sid),
+                "user_id": info.get("user_id"),
+                "status": info.get("status", "active"),
+                "started_at": info.get("started_at"),
+                "message_count": info.get("message_count", 0),
+                "last_message_at": info.get("last_message_at"),
+                "bot_name": info.get("bot_name", "智能客服小e"),
+            })
+        return {"sessions": sessions, "total": len(sessions)}
+
+    # ── 会话生命周期治理（M1）──
+    def _remove_session(self, session_id: str) -> None:
+        """同步清理三表，避免内存状态不一致"""
+        _sessions.pop(session_id, None)
+        _conversations.pop(session_id, None)
+        _agents.pop(session_id, None)
+
+    def _purge_expired(self) -> None:
+        """惰性淘汰：删除空闲超过 TTL 的会话（在创建/发送时触发）"""
+        now = datetime.datetime.now(datetime.timezone.utc)
+        expired = [
+            sid for sid, info in _sessions.items()
+            if (now - (info.get("last_message_at") or info.get("started_at") or now)).total_seconds()
+            > SESSION_TTL_SECONDS
+        ]
+        for sid in expired:
+            self._remove_session(sid)
+            logger.info(f"会话因空闲超时已淘汰: {sid}")
+
+    def _evict_lru(self) -> None:
+        """容量上限：超过 MAX_SESSIONS 时按最旧活动淘汰"""
+        sentinel = datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
+        while len(_sessions) > MAX_SESSIONS:
+            oldest_sid, oldest_info = min(
+                _sessions.items(),
+                key=lambda kv: kv[1].get("last_message_at") or kv[1].get("started_at") or sentinel,
+            )
+            self._remove_session(oldest_sid)
+            logger.info(f"会话因超过容量上限已淘汰(LRU): {oldest_sid}")
+
+    async def delete_session(self, session_id: str) -> bool:
+        """删除会话：清理内存中的会话元数据、对话历史与 Agent 实例"""
+        existed = session_id in _sessions or session_id in _conversations
+        _sessions.pop(session_id, None)
+        _conversations.pop(session_id, None)
+        _agents.pop(session_id, None)
+        logger.info(f"会话已删除: {session_id}")
+        return True
 
     async def transfer_to_human(self, session_id: str, reason: str = "用户主动请求") -> Dict[str, Any]:
         """转人工"""
@@ -341,7 +415,7 @@ class ChatService:
         return {
             "success": True,
             "message": "已为您转接人工客服",
-            "transfer_id": f"TRF_{__import__('uuid').uuid4().hex[:8]}",
+            "transfer_id": f"TRF_{uuid.uuid4().hex[:8]}",
             "queue_position": 1,
             "estimated_wait_time": 3,
         }

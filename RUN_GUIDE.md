@@ -171,7 +171,27 @@ A: 编辑 `frontend/vite.config.ts`，修改 `server.port` 的值。
 
 ---
 
-## 五、项目配置说明
+## 五、架构特性说明
+
+### 会话生命周期管理
+
+- **容量上限**：内存中最多保持 200 个活跃会话，超出时按 LRU 淘汰
+- **空闲 TTL**：24 小时无活动自动清理，清理在创建/发送消息时惰性触发
+- **本地缓存**：前端存储最近 10 个会话，刷新页面可恢复
+
+### 安全机制
+
+- **全局限流**：基于 IP 的频率限制中间件，防止 API 滥用
+- **JWT 鉴权**：生产环境可通过 `REQUIRE_AUTH=true` 开启全站 Bearer 认证（默认关闭以方便 demo）
+- **密钥隔离**：所有 API Key 通过 `backend/.env` 注入，`.env` 已加入 `.gitignore` 不会上传
+
+### RAG 双路检索
+
+向量数据库检索（ChromaDB）与内置知识库关键词匹配并行执行，结果合并去重。当 Embedding 不可用（返回零向量）时自动降级为纯关键词检索。
+
+### Agent 工具接线
+
+6 个工具（search_knowledge / query_order / query_product / refund / create_ticket / transfer_human）已通过 `_handle_with_tools` 和 `_handle_transfer` 方法接入 Agent 执行链，意图识别后按 `handler_type` 分发。
 
 ### LLM 模型配置
 
@@ -196,14 +216,7 @@ A: 编辑 `frontend/vite.config.ts`，修改 `server.port` 的值。
 **快速配置：**
 
 1. 注册 [Langfuse Cloud](https://cloud.langfuse.com) 或部署自托管实例
-2. 在 `backend/.env` 中配置：
-```bash
-LANGFUSE_PUBLIC_KEY=pk-lf-...
-LANGFUSE_SECRET_KEY=sk-lf-...
-LANGFUSE_BASE_URL=https://cloud.langfuse.com
-LANGFUSE_TRACING_ENABLED=true
-LANGFUSE_ENVIRONMENT=development
-```
+2. 在 `backend/.env` 中配置（参考 `.env.example` 了解完整配置项）
 3. 重启后端，追踪数据自动上报
 
 **追踪结构：**
@@ -228,13 +241,16 @@ chat-send-message (根 span)
 
 | 分类 | 意图代码 | 处理方式 |
 |------|----------|----------|
-| 商品咨询 | product_inquiry | RAG 检索 |
-| 订单查询 | order_query | 工具调用 |
-| 退款退货 | refund_request | 工具调用 |
-| 投诉 | complaint | 转人工 |
+| 商品咨询 | product_inquiry | 工具调用（SearchKnowledgeTool） |
+| 订单查询 | order_query | 工具调用（QueryOrderTool） |
+| 退款退货 | refund_request | 工具调用（RefundTool） |
+| 提交工单 | ticket_create | 工具调用（CreateTicketTool） |
+| 投诉 | complaint | 转人工（TransferHumanTool） |
 | 转人工 | human_agent | 转人工 |
 | 支付问题 | payment_issue | RAG 检索 |
 | 配送查询 | shipping_info | RAG 检索 |
 | 促销活动 | promotion | RAG 检索 |
 | 问候 | greeting | LLM 直接回复 |
 | 兜底 | fallback | LLM 直接回复 |
+
+> 所有工具调用已通过 Agent ReAct 框架接线（`_handle_with_tools` → `agent.execute_tool`），不再使用硬编码 Mock 数据。

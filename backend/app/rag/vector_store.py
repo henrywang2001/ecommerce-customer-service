@@ -93,6 +93,18 @@ class VectorStore:
             logger.error(f"删除向量失败: {e}")
             return False
 
+    async def get(self, ids: List[str]) -> List[str]:
+        """返回实际存在的 id 列表（用于删除前确认存在性，避免误报）"""
+        collection = await self._get_collection()
+        if collection is None:
+            return []
+        try:
+            res = collection.get(ids=ids)
+            return (res.get("ids") or []) if res else []
+        except Exception as e:
+            logger.error(f"向量获取失败: {e}")
+            return []
+
 
 # 全局单例
 vector_store = VectorStore()

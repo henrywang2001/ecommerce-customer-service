@@ -14,8 +14,14 @@ INTENT_CONFIGS: Dict[str, Dict[str, Any]] = {
     "product_inquiry": {
         "name": "商品咨询",
         "keywords": ["商品", "产品", "多少钱", "价格", "怎么样", "好不好", "推荐", "有货"],
-        "handler": "rag",
+        "handler": "tool",
         "priority": 5,
+    },
+    "ticket_create": {
+        "name": "提交工单",
+        "keywords": ["工单", "提交工单", "开个工单", "建工单", "创建工单", "问题反馈"],
+        "handler": "tool",
+        "priority": 7,
     },
     "order_query": {
         "name": "订单查询",

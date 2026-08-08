@@ -23,7 +23,8 @@ class AddDocumentRequest(BaseModel):
 @router.post("/search")
 async def search_knowledge(req: SearchRequest):
     """搜索知识库"""
-    results = await rag_service.search(req.query, req.top_k)
+    filters = {"category": req.category} if req.category else None
+    results = await rag_service.search(req.query, req.top_k, filters)
     return {"query": req.query, "results": results, "total": len(results)}
 
 
@@ -45,3 +46,12 @@ async def list_categories():
     # Mock 分类数据
     categories = ["退换货政策", "配送服务", "支付问题", "会员权益", "促销活动", "售后政策", "订单修改", "发票问题"]
     return {"categories": categories}
+
+
+@router.delete("/{knowledge_id}")
+async def delete_knowledge(knowledge_id: str):
+    """删除知识文档"""
+    success = await rag_service.delete_document(knowledge_id)
+    if success:
+        return {"success": True, "message": "知识条目已删除"}
+    return {"success": False, "message": f"未找到知识条目: {knowledge_id}"}

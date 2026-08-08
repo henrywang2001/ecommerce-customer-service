@@ -1,7 +1,6 @@
 <template>
   <div class="kb-page">
     <header class="page-header">
-      <el-button @click="$router.push('/')" type="text">← 返回聊天</el-button>
       <h2>📚 知识库管理</h2>
       <el-button type="primary" @click="showAddDialog = true">+ 添加知识</el-button>
     </header>
@@ -37,7 +36,6 @@
         <div class="kb-header">
           <span class="kb-category">{{ item.category || '未分类' }}</span>
           <span class="kb-actions">
-            <el-button size="small" text @click="editItem(item)">✏️</el-button>
             <el-button size="small" text @click="deleteItem(item)">🗑️</el-button>
           </span>
         </div>
@@ -54,7 +52,7 @@
     </div>
 
     <!-- 添加知识对话框 -->
-    <el-dialog v-model="showAddDialog" :title="editingItem ? '编辑知识' : '添加知识'" width="500px">
+    <el-dialog v-model="showAddDialog" title="添加知识" width="500px">
       <el-form :model="addForm" label-width="80px">
         <el-form-item label="分类">
           <el-select v-model="addForm.category" placeholder="选择分类" clearable>
@@ -86,9 +84,8 @@
         </el-form-item>
         <el-form-item>
           <el-button type="primary" @click="addKnowledge" :loading="adding">
-            {{ editingItem ? '保存' : '添加' }}
+            添加
           </el-button>
-          <el-button v-if="editingItem" @click="cancelEdit">取消</el-button>
         </el-form-item>
       </el-form>
     </el-dialog>
@@ -106,7 +103,6 @@ const categories = ref<string[]>([])
 const showAddDialog = ref(false)
 const adding = ref(false)
 const searched = ref(false)
-const editingItem = ref<any>(null)
 const questionError = ref(false)
 const answerError = ref(false)
 
@@ -141,29 +137,20 @@ function scoreClass(score: number) {
   return 'score-low'
 }
 
-function editItem(item: any) {
-  editingItem.value = item
-  addForm.category = item.category || ''
-  addForm.question = item.question || ''
-  addForm.answer = item.answer || ''
-  addForm.keywords = item.keywords || ''
-  showAddDialog.value = true
-}
-
-function cancelEdit() {
-  editingItem.value = null
-  showAddDialog.value = false
-  resetForm()
-}
-
 async function deleteItem(item: any) {
   try {
     await ElMessageBox.confirm('确定要删除该知识条目吗？', '确认删除', { type: 'warning' })
-    await request.delete(`/api/v1/knowledge/${item.id}`)
+    const res = (await request.delete(`/api/v1/knowledge/${item.id}`)) as any
+    if (res && res.success === false) {
+      ElMessage.error(res.message || '删除失败')
+      return
+    }
     ElMessage.success('已删除')
     if (searchKeyword.value) await search()
   } catch (e) {
-    if (e !== 'cancel') console.error('删除失败:', e)
+    if (e === 'cancel') return
+    ElMessage.error('删除失败')
+    console.error('删除失败:', e)
   }
 }
 
@@ -176,7 +163,6 @@ async function addKnowledge() {
   try {
     await request.post('/api/v1/knowledge/add', { ...addForm })
     showAddDialog.value = false
-    editingItem.value = null
     resetForm()
     searchKeyword.value = addForm.question
     await search()

@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     # JWT 配置
     SECRET_KEY: str = "ecommerce-cs-secret-key-change-in-production"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24  # 24 小时
+    REQUIRE_AUTH: bool = False  # 生产环境鉴权开关：True 时全站需 Bearer JWT，False 时 demo 无鉴权
 
     # LLM 配置 — DeepSeek（API Key 通过 .env 设置，此处仅作占位）
     LLM_API_KEY: str = ""

@@ -32,4 +32,9 @@ export const chatApi = {
   rateSession(sessionId: string, score: number, comment?: string) {
     return request.post('/api/v1/chat/rate', { session_id: sessionId, score, comment })
   },
+
+  /** 删除会话 */
+  deleteSession(sessionId: string) {
+    return request.delete(`/api/v1/chat/sessions/${sessionId}`)
+  },
 }

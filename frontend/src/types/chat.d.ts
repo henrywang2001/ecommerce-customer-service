@@ -37,6 +37,7 @@ export interface SessionInfo {
   userId?: number
   status: string
   startedAt: string
+  lastMessageAt?: string
   message_count: number
   bot_name: string
 }
@@ -68,4 +69,5 @@ export interface CreateSessionResponse {
   }
   welcome_message: string
   quick_replies: string[]
+  initial_response?: Record<string, any> | null
 }

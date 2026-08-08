@@ -1,8 +1,8 @@
 <template>
   <div class="dashboard-page">
     <header class="page-header">
-      <el-button @click="$router.push('/')" type="text">← 返回聊天</el-button>
       <h2>📊 数据看板</h2>
+      <span class="demo-badge">DEMO 数据</span>
     </header>
 
     <!-- 骨架屏 -->
@@ -160,6 +160,23 @@ onMounted(loadDashboard)
   align-items: center;
   gap: 16px;
   margin-bottom: 24px;
+}
+
+.demo-badge {
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  color: #b26a00;
+  background: #fff4e0;
+  border: 1px solid #ffd591;
+  border-radius: 10px;
+  padding: 3px 10px;
+}
+body.dark .demo-badge {
+  color: #ffc069;
+  background: rgba(255, 192, 105, 0.12);
+  border-color: rgba(255, 192, 105, 0.4);
 }
 
 .stats-grid {

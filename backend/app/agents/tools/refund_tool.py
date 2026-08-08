@@ -57,7 +57,13 @@ class RefundTool:
         }
 
     async def _handle_return_goods(self, message: str, user_id: Optional[int]) -> Dict[str, Any]:
-        order_no = self._extract_order_no(message) or "ORDER20260315001"
+        order_no = self._extract_order_no(message)
+        if not order_no:
+            return {
+                "success": True,
+                "response": "请提供需要退货的订单号，例如：退货 ORDER20260315001",
+                "action": "return_goods",
+            }
         return {
             "success": True,
             "response": (

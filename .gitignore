@@ -25,6 +25,9 @@ dist/
 # ChromaDB
 chroma_db/
 
+# 设计文档（仅本地保留，不上传）
+docs/
+
 # 日志
 logs/
 *.log

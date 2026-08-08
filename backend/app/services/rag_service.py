@@ -1,11 +1,16 @@
 """RAG 检索增强生成服务（集成 Langfuse 追踪）"""
 from typing import List, Dict, Any, Optional
+import asyncio
 import logging
 from app.services.embedding_service import embedding_service
 from app.services.llm_service import llm_service
 from app.services.observe_service import observe
+from app.rag.vector_store import vector_store
 
 logger = logging.getLogger(__name__)
+
+# 知识库写操作异步锁（防御并发修改全局 BUILT_IN_KNOWLEDGE）
+_kb_lock = asyncio.Lock()
 
 # 内置知识库内容（Mock 数据，实际项目中使用 ChromaDB）
 BUILT_IN_KNOWLEDGE: List[Dict[str, Any]] = [
@@ -65,6 +70,41 @@ BUILT_IN_KNOWLEDGE: List[Dict[str, Any]] = [
         "answer": "下单时可在结算页面选择开具发票，支持电子发票和纸质发票。已完成的订单可在订单详情中补开发票。",
         "keywords": "发票 开票 电子发票 纸质发票",
     },
+    {
+        "id": "kb_009",
+        "category": "支付问题",
+        "question": "退款多久到账？",
+        "answer": "退款审核通过后将在1-3个工作日内原路退回：支付宝/微信支付通常1-3个工作日到账，银行卡支付3-7个工作日。可在「我的订单」中查看退款进度。",
+        "keywords": "退款 到账 退款时间 退款进度 原路退回",
+    },
+    {
+        "id": "kb_010",
+        "category": "退换货政策",
+        "question": "退换货运费由谁承担？",
+        "answer": "7天无理由退换货（非质量问题）的运费由买家承担；因商品质量问题产生的退换货运费由商家承担。建议下单前查看商品页面的运费说明。",
+        "keywords": "退货运费 换货运费 运费 谁承担 运费险",
+    },
+    {
+        "id": "kb_011",
+        "category": "配送服务",
+        "question": "下单后多久发货？",
+        "answer": "现货商品一般在付款后24-48小时内发货；预售/定制商品以商品页标注的发货时间为准。发货后可通过物流单号跟踪配送进度。",
+        "keywords": "发货 发货时间 多久发货 预售 发货时效",
+    },
+    {
+        "id": "kb_012",
+        "category": "促销活动",
+        "question": "优惠券怎么使用？",
+        "answer": "结算页面选择可用优惠券即可抵扣金额；注意每张优惠券的有效期与使用门槛（如满减门槛），优惠券通常不可叠加使用。可在「我的优惠券」查看可用券。",
+        "keywords": "优惠券 满减 抵扣 怎么用 使用规则 叠加",
+    },
+    {
+        "id": "kb_013",
+        "category": "售后政策",
+        "question": "客服服务时间是什么时候？",
+        "answer": "在线智能客服7×24小时为您服务；人工客服服务时间为每日9:00-22:00。非人工服务时段您可留言，人工上线后会优先回复。",
+        "keywords": "客服时间 服务时间 人工客服 在线时间 上班时间",
+    },
 ]
 
 
@@ -106,7 +146,11 @@ class RAGService:
         top_k: int = 5,
         filters: Optional[Dict] = None,
     ) -> List[Dict[str, Any]]:
-        """检索相关文档 — Langfuse retriever 追踪"""
+        """检索相关文档 — Langfuse retriever 追踪
+        关键修复：无论 Chroma 是否非空，始终将「内置知识库关键词检索」结果与
+        Chroma 向量检索结果合并去重后返回，避免 Chroma 一旦写入就挤掉内置知识。
+        """
+        from app.core.config import settings
         logger.info(f"RAG 检索: {query[:50]}...")
 
         # ── Langfuse: retriever 追踪 ──
@@ -114,61 +158,108 @@ class RAGService:
             name="rag-search",
             input={"query": query, "top_k": top_k, "filters": filters},
         ) as ret:
+            chroma_results: List[Dict[str, Any]] = []
             chroma = await self._get_chroma()
+            # 检测零向量：embedding 不可用时（返回全 0 向量）不再做向量检索，避免污染结果
             if chroma is not None:
+                query_embedding = await embedding_service.encode_single(query)
+                is_zero = all(v == 0.0 for v in query_embedding)
+            else:
+                is_zero = False
+            if chroma is not None and not is_zero:
                 try:
-                    from app.core.config import settings
                     collection = chroma.get_or_create_collection(
                         name=settings.CHROMA_COLLECTION,
                     )
                     if collection.count() > 0:
-                        query_embedding = await embedding_service.encode_single(query)
-                        chroma_results = collection.query(
+                        chroma_raw = collection.query(
                             query_embeddings=[query_embedding],
                             n_results=top_k,
                         )
-                        results = []
-                        if chroma_results["ids"] and chroma_results["ids"][0]:
-                            for i, doc_id in enumerate(chroma_results["ids"][0]):
-                                metadata = chroma_results["metadatas"][0][i] if chroma_results["metadatas"] else {}
-                                score = 1.0 - (chroma_results["distances"][0][i] if chroma_results.get("distances") else 0.1 * i)
-                                results.append({
-                                    "score": score,
+                        if chroma_raw["ids"] and chroma_raw["ids"][0]:
+                            # 1) 先收集每条结果的原始 distance（distance 缺失时回退 0.1*i），
+                            #    连同文档字段一起暂存，稍后统一做归一化。
+                            raw_items: List[Dict[str, Any]] = []
+                            distances: List[float] = []
+                            for i, doc_id in enumerate(chroma_raw["ids"][0]):
+                                metadata = (
+                                    chroma_raw["metadatas"][0][i]
+                                    if chroma_raw["metadatas"]
+                                    else {}
+                                )
+                                distance = (
+                                    chroma_raw["distances"][0][i]
+                                    if chroma_raw.get("distances")
+                                    else 0.1 * i
+                                )
+                                raw_items.append({
+                                    "id": doc_id,
                                     "category": metadata.get("category", ""),
                                     "question": metadata.get("question", ""),
-                                    "answer": chroma_results["documents"][0][i] if chroma_results["documents"] else "",
+                                    "answer": (
+                                        chroma_raw["documents"][0][i]
+                                        if chroma_raw["documents"]
+                                        else ""
+                                    ),
                                 })
+                                distances.append(distance)
 
-                            if ret is not None:
-                                ret.update(
-                                    output={
-                                        "result_count": len(results),
-                                        "top_scores": [r["score"] for r in results[:3]],
-                                        "source": "chromadb",
-                                    },
-                                    metadata={"embedding_model": settings.EMBEDDING_MODEL},
+                            # 2) 对本次查询返回的 Chroma 结果集做 min-max 归一化到 [0,1]
+                            #    （最近→1.0，最远→0.0），使其与内置库关键词分数（0.3~1.0）
+                            #    同量纲，合并排序时向量命中能合理上浮。
+                            #    说明：不用 1/(1+distance) —— 本数据所有距离都在 ~2万级，
+                            #    该式会把所有向量分数压成 ~4e-5 且几乎无差异，等于没修。
+                            dmin = min(distances)
+                            dmax = max(distances)
+                            span = dmax - dmin
+                            for item, distance in zip(raw_items, distances):
+                                item["score"] = (
+                                    1.0 if span == 0 else 1.0 - (distance - dmin) / span
                                 )
-                            return results
+                                chroma_results.append(item)
                 except Exception as e:
                     logger.warning(f"ChromaDB 查询失败: {e}")
 
-            # Fallback: 使用内置知识库做关键词匹配
-            results = self._keyword_search(query, top_k)
+            # 始终基于内置知识库做关键词检索，保证内置知识任何情况下可检索
+            builtin_results = self._keyword_search(query, top_k, filters)
+
+            # 合并去重（按 id 取高分），按分数降序截取 top_k
+            merged = self._merge_search_results(chroma_results, builtin_results, top_k)
+
             if ret is not None:
+                source = "chromadb+built-in" if chroma_results else "built-in-keyword"
                 ret.update(
                     output={
-                        "result_count": len(results),
-                        "top_scores": [r["score"] for r in results[:3]],
-                        "source": "built-in-keyword",
-                    }
+                        "result_count": len(merged),
+                        "top_scores": [r["score"] for r in merged[:3]],
+                        "source": source,
+                    },
+                    metadata={"embedding_model": settings.EMBEDDING_MODEL} if chroma_results else {},
                 )
-            return results
+            return merged
 
-    def _keyword_search(self, query: str, top_k: int) -> List[Dict[str, Any]]:
+    def _merge_search_results(
+        self,
+        chroma_results: List[Dict[str, Any]],
+        builtin_results: List[Dict[str, Any]],
+        top_k: int,
+    ) -> List[Dict[str, Any]]:
+        """合并 Chroma 与内置库结果，按 id 去重（保留分数更高者），降序截取 top_k。"""
+        by_id: Dict[str, Dict[str, Any]] = {}
+        for r in list(chroma_results) + list(builtin_results):
+            existing = by_id.get(r["id"])
+            if existing is None or r["score"] > existing["score"]:
+                by_id[r["id"]] = r
+        merged = sorted(by_id.values(), key=lambda x: x["score"], reverse=True)
+        return merged[:top_k]
+
+    def _keyword_search(self, query: str, top_k: int, filters: Optional[Dict] = None) -> List[Dict[str, Any]]:
         """基于关键词的内置知识库检索"""
         query_lower = query.lower()
         scored = []
         for kb in BUILT_IN_KNOWLEDGE:
+            if filters and filters.get("category") and kb["category"] != filters["category"]:
+                continue
             score = 0.0
             for word in query_lower.split():
                 if word in kb["question"]:
@@ -252,16 +343,48 @@ class RAGService:
             except Exception as e:
                 logger.warning(f"ChromaDB 写入失败: {e}")
 
-        # 同时加到内置库
-        BUILT_IN_KNOWLEDGE.append({
-            "id": vector_id,
-            "category": category,
-            "question": question,
-            "answer": answer,
-            "keywords": keywords,
-        })
+        # 同时加到内置库（加锁保证写操作并发安全）
+        async with _kb_lock:
+            BUILT_IN_KNOWLEDGE.append({
+                "id": vector_id,
+                "category": category,
+                "question": question,
+                "answer": answer,
+                "keywords": keywords,
+            })
 
         return vector_id
+
+    async def delete_document(self, knowledge_id: str) -> bool:
+        """删除知识文档（Chroma + 内置库）。
+
+        先确认 id 是否真实存在，避免对「不存在的 id」误报『已删除』：
+        - 内置库命中 → 删除并返回 True
+        - 仅存在于 Chroma → 删除并返回 True
+        - 两处均不存在 → 返回 False（上层据此返回 success:false / 未找到）
+        """
+        global BUILT_IN_KNOWLEDGE
+        # 1) 内置库是否存在（加锁读取）
+        async with _kb_lock:
+            in_builtin = any(k.get("id") == knowledge_id for k in BUILT_IN_KNOWLEDGE)
+        # 2) Chroma 是否存在（内置库未命中时才查，避免无谓调用）
+        in_chroma = False
+        if not in_builtin:
+            try:
+                existing = await vector_store.get(ids=[knowledge_id])
+                in_chroma = bool(existing)
+            except Exception:
+                in_chroma = False
+        if not (in_builtin or in_chroma):
+            return False
+        # 3) 执行删除
+        try:
+            await vector_store.delete([knowledge_id])
+        except Exception:
+            pass
+        async with _kb_lock:
+            BUILT_IN_KNOWLEDGE = [k for k in BUILT_IN_KNOWLEDGE if k.get("id") != knowledge_id]
+        return True
 
 
 # 全局单例
