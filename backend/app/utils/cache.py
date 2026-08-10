@@ -1,19 +1,65 @@
-"""缓存工具 — Redis 封装"""
+"""缓存工具 — Redis 封装（P3 修复）
+
+缓存统一走 Redis（水平扩展友好），无 Redis 时 fallback 到「有界 + TTL」的内存缓存，
+避免原实现中 _cache 无上限增长导致的内存泄漏（P3/P9）。
+"""
 import json
+import time
 import logging
-from typing import Any, Optional
+from typing import Any, Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-# 简化的内存缓存（无 Redis 时 fallback）
-_cache: dict = {}
+
+class _MemoryBackend:
+    """有界 TTL 内存缓存：maxsize 控制容量上限，TTL 控制条目过期。
+
+    用于 Redis 不可用时的 fallback，保证即使长期运行也不会无限膨胀。
+    """
+
+    def __init__(self, maxsize: int = 1000, default_ttl: int = 3600):
+        self._maxsize = maxsize
+        self._ttl = default_ttl
+        self._store: Dict[str, Tuple[Any, float]] = {}  # key -> (value, expire_at)
+        self._order: list = []  # FIFO 写入顺序，用于超额淘汰
+
+    def get(self, key: str) -> Optional[Any]:
+        item = self._store.get(key)
+        if item is None:
+            return None
+        value, expire_at = item
+        if expire_at is not None and time.time() > expire_at:
+            self._store.pop(key, None)
+            self._safe_remove_order(key)
+            return None
+        return value
+
+    def set(self, key: str, value: Any, expire: int) -> None:
+        ttl = expire or self._ttl
+        self._store[key] = (value, time.time() + ttl)
+        self._order.append(key)
+        while len(self._store) > self._maxsize:
+            old = self._order.pop(0)
+            self._store.pop(old, None)
+
+    def delete(self, key: str) -> None:
+        self._store.pop(key, None)
+        self._safe_remove_order(key)
+
+    def _safe_remove_order(self, key: str) -> None:
+        if key in self._order:
+            try:
+                self._order.remove(key)
+            except ValueError:
+                pass
 
 
 class Cache:
-    """缓存工具类 — 优先 Redis，无 Redis 时使用内存"""
+    """缓存工具类 — 优先 Redis，无 Redis 时使用有界内存"""
 
     def __init__(self):
         self._redis = None
+        self._memory = _MemoryBackend()
 
     async def _get_redis(self):
         """懒加载 Redis 连接"""
@@ -38,7 +84,7 @@ class Cache:
                 return json.loads(value) if value else None
             except Exception:
                 return None
-        return _cache.get(key)
+        return self._memory.get(key)
 
     async def set(self, key: str, value: Any, expire: int = 3600) -> bool:
         """设置缓存"""
@@ -49,7 +95,7 @@ class Cache:
                 return True
             except Exception:
                 pass
-        _cache[key] = value
+        self._memory.set(key, value, expire)
         return True
 
     async def delete(self, key: str) -> bool:
@@ -61,7 +107,7 @@ class Cache:
                 return True
             except Exception:
                 pass
-        _cache.pop(key, None)
+        self._memory.delete(key)
         return True
 
 

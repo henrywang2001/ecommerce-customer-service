@@ -8,6 +8,7 @@ from app.services.embedding_service import embedding_service
 from app.services.llm_service import llm_service
 from app.services.observe_service import observe
 from app.rag.vector_store import vector_store
+from app.rag.chroma_client import collection_has_docs, invalidate_collection_cache
 from app.utils.cache import cache
 
 logger = logging.getLogger(__name__)
@@ -187,7 +188,8 @@ class RAGService:
                     collection = chroma.get_or_create_collection(
                         name=settings.CHROMA_COLLECTION,
                     )
-                    if collection.count() > 0:
+                    # P10：用带缓存的「是否非空」判断替代每次检索都执行的 collection.count()
+                    if await collection_has_docs(collection):
                         chroma_raw = collection.query(
                             query_embeddings=[query_embedding],
                             n_results=top_k,
@@ -399,6 +401,9 @@ class RAGService:
                 logger.info(f"文档已添加到 ChromaDB: {vector_id}")
             except Exception as e:
                 logger.warning(f"ChromaDB 写入失败: {e}")
+            finally:
+                # P10：文档增减后使「是否非空」缓存失效
+                invalidate_collection_cache()
 
         # 同时加到内置库（加锁保证写操作并发安全）
         async with _kb_lock:
@@ -439,6 +444,9 @@ class RAGService:
             await vector_store.delete([knowledge_id])
         except Exception:
             pass
+        finally:
+            # P10：文档增减后使「是否非空」缓存失效
+            invalidate_collection_cache()
         async with _kb_lock:
             BUILT_IN_KNOWLEDGE = [k for k in BUILT_IN_KNOWLEDGE if k.get("id") != knowledge_id]
         return True

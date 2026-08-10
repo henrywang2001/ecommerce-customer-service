@@ -1,4 +1,4 @@
-"""HTTP 层冒烟测试：健康检查与根路由（REQUIRE_AUTH 默认关闭时放行）。"""
+"""HTTP 层冒烟测试：健康检查与根路由（"/" 与 "/health" 为永远公开路由）。"""
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -11,8 +11,8 @@ def test_health():
         assert r.json()["status"] == "healthy"
 
 
-def test_root_no_auth_by_default():
-    """H2：REQUIRE_AUTH 默认 False，根路径无需令牌即可访问。"""
+def test_root_is_always_public():
+    """H2/B2：根路径为永远公开路由，无需令牌即可访问（不受 REQUIRE_AUTH 影响）。"""
     with TestClient(app) as client:
         r = client.get("/")
         assert r.status_code == 200

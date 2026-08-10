@@ -19,8 +19,8 @@ useThemeStore() // 启动时应用并监听主题（单一可信源）
   --bg-primary: #f5f5f5;
   --bg-secondary: #ffffff;
   --text-primary: #333333;
-  --text-secondary: #666666;
-  --text-muted: #999999;
+  --text-secondary: #555555;
+  --text-muted: #595959;
   --border-color: #eeeeee;
   --bubble-user: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   --bubble-bot: #ffffff;
@@ -35,8 +35,8 @@ body.dark {
   --bg-primary: #1a1a2e;
   --bg-secondary: #16213e;
   --text-primary: #e0e0e0;
-  --text-secondary: #a0a0a0;
-  --text-muted: #777777;
+  --text-secondary: #b8b8b8;
+  --text-muted: #b3b3b3;
   --border-color: #2a2a4a;
   --bubble-user: linear-gradient(135deg, #667eea 0%, #9b59b6 100%);
   --bubble-bot: #1e2a45;
@@ -153,5 +153,15 @@ body.dark .skeleton-bar-sm,
 body.dark .skeleton-block {
   background: linear-gradient(90deg, #1e2a45 25%, #2a3a55 50%, #1e2a45 75%);
   background-size: 200% 100%;
+}
+
+/* ===== 尊重 prefers-reduced-motion（U13）：关闭非必要动画/过渡，降低眩晕与功耗 ===== */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 </style>

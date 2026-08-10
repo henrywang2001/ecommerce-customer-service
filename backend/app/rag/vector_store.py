@@ -2,29 +2,23 @@
 import logging
 from typing import List, Dict, Any, Optional
 
+from app.rag.chroma_client import collection_has_docs, invalidate_collection_cache
+
 logger = logging.getLogger(__name__)
 
 
 class VectorStore:
     """向量存储封装 — ChromaDB"""
 
-    def __init__(self):
-        self._client = None
-
     async def _get_collection(self):
-        """获取或创建 ChromaDB collection"""
-        if self._client is None:
-            try:
-                import chromadb
-                from app.core.config import settings
-                self._client = chromadb.PersistentClient(path=settings.CHROMA_PERSIST_DIR)
-                logger.info(f"ChromaDB 客户端已初始化: {settings.CHROMA_PERSIST_DIR}")
-            except ImportError:
-                logger.warning("chromadb 未安装")
-                return None
+        """获取或创建 ChromaDB collection（P7 修复：复用全局客户端单例，避免同目录多客户端锁竞争）"""
+        from app.rag.chroma_client import get_chroma_client
+        client = get_chroma_client()
+        if client is None:
+            return None
         try:
             from app.core.config import settings
-            return self._client.get_or_create_collection(name=settings.CHROMA_COLLECTION)
+            return client.get_or_create_collection(name=settings.CHROMA_COLLECTION)
         except Exception as e:
             logger.error(f"获取 collection 失败: {e}")
             return None
@@ -47,6 +41,8 @@ class VectorStore:
                 embeddings=embeddings,
                 metadatas=metadatas,
             )
+            # P10：文档增减后使「是否非空」缓存失效
+            invalidate_collection_cache()
             return True
         except Exception as e:
             logger.error(f"向量存储添加失败: {e}")
@@ -59,7 +55,8 @@ class VectorStore:
     ) -> List[Dict[str, Any]]:
         """向量相似度检索"""
         collection = await self._get_collection()
-        if collection is None or collection.count() == 0:
+        # P10：用带缓存的「是否非空」判断替代每次检索都执行的 collection.count()
+        if collection is None or not await collection_has_docs(collection):
             return []
         try:
             results = collection.query(
@@ -88,6 +85,8 @@ class VectorStore:
             return False
         try:
             collection.delete(ids=ids)
+            # P10：文档增减后使「是否非空」缓存失效
+            invalidate_collection_cache()
             return True
         except Exception as e:
             logger.error(f"删除向量失败: {e}")

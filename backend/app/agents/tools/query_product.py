@@ -1,51 +1,13 @@
-"""商品查询工具"""
+"""商品查询工具（F5 修复：商品数据统一从 app.data.mock_data 读取，杜绝双源漂移）"""
 from typing import Dict, Any, List
 import logging
 
+from app.data.mock_data import PRODUCTS
+
 logger = logging.getLogger(__name__)
 
-MOCK_PRODUCTS = [
-    {
-        "id": "P001", "sku": "SKU-IPHONE15PM-256",
-        "name": "Apple iPhone 15 Pro Max 256GB 钛金属色",
-        "category": "手机", "brand": "Apple",
-        "price": 9999.00, "original_price": 10999.00,
-        "stock": 50, "rating": 4.9, "sales": 12580,
-        "tags": ["旗舰", "5G", "钛金属"],
-    },
-    {
-        "id": "P002", "sku": "SKU-DYSON-HD15",
-        "name": "戴森（Dyson）HD15 新一代吹风机",
-        "category": "家电", "brand": "戴森",
-        "price": 2999.00, "original_price": 3299.00,
-        "stock": 120, "rating": 4.8, "sales": 8950,
-        "tags": ["高速吹风", "护发"],
-    },
-    {
-        "id": "P003", "sku": "SKU-NIKE-AJ1-001",
-        "name": "Nike Air Jordan 1 Retro High OG 男款篮球鞋",
-        "category": "运动鞋", "brand": "Nike",
-        "price": 1499.00, "original_price": 1499.00,
-        "stock": 35, "rating": 4.7, "sales": 5680,
-        "tags": ["AJ1", "经典", "OG"],
-    },
-    {
-        "id": "P004", "sku": "SKU-MACBOOK-M3-014",
-        "name": "Apple MacBook Pro 14英寸 M3 Pro芯片 18+512GB",
-        "category": "电脑", "brand": "Apple",
-        "price": 16999.00, "original_price": 18999.00,
-        "stock": 25, "rating": 4.9, "sales": 3200,
-        "tags": ["M3 Pro", "专业级", "轻薄"],
-    },
-    {
-        "id": "P005", "sku": "SKU-HW-P60PRO-256",
-        "name": "华为 P60 Pro 超聚光XMAGE影像 玄武镀膜",
-        "category": "手机", "brand": "华为",
-        "price": 5988.00, "original_price": 6988.00,
-        "stock": 80, "rating": 4.8, "sales": 9800,
-        "tags": ["XMAGE", "双向卫星消息"],
-    },
-]
+# Mock 商品数据（单一来源，见 app/data/mock_data.py）
+MOCK_PRODUCTS = PRODUCTS
 
 CATEGORY_KEYWORDS = [
     "手机", "电脑", "平板", "耳机", "音箱", "相机",

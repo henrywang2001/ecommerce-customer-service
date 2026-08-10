@@ -38,9 +38,22 @@
         </div>
       </div>
 
+      <!-- 更早消息入口（P12 窗口化渲染） -->
+      <div
+        v-if="hiddenCount > 0"
+        class="history-banner"
+        role="button"
+        tabindex="0"
+        :aria-label="`查看更早的 ${hiddenCount} 条消息`"
+        @click="loadEarlier"
+        @keydown.enter.prevent="loadEarlier"
+      >
+        ↑ 查看更早的 {{ hiddenCount }} 条消息
+      </div>
+
       <!-- 消息列表 -->
       <div
-        v-for="msg in chatStore.messages"
+        v-for="msg in visibleMessages"
         :key="msg.id"
         class="message-row"
         :class="{ 'is-user': msg.isUser, 'is-error': msg.isError }"
@@ -87,12 +100,34 @@
       </el-button>
     </div>
 
+    <!-- 会话评价（F2）：接线此前未使用的 rateSession -->
+    <div v-if="showRating" class="rating-bar">
+      <span class="rating-label">本次服务是否解决了您的问题？</span>
+      <div class="rating-stars" role="radiogroup" aria-label="会话满意度评分（1 到 5 星）">
+        <button
+          v-for="n in 5"
+          :key="n"
+          class="rating-star"
+          type="button"
+          role="radio"
+          :aria-checked="ratingScore === n"
+          :aria-label="`${n} 星`"
+          :class="{ active: ratingScore >= n }"
+          @click="submitRating(n)"
+        >★</button>
+      </div>
+      <span v-if="ratingSubmitted" class="rating-thanks">感谢您的评价！</span>
+      <button v-if="!ratingSubmitted" class="rating-close" type="button" aria-label="关闭评价" @click="dismissRating">✕</button>
+    </div>
+
     <!-- 输入框 -->
     <div class="chat-input">
       <el-input
         v-model="inputText"
         type="textarea"
         :rows="inputRows"
+        maxlength="2000"
+        show-word-limit
         placeholder="输入您的问题，按 Enter 发送，Shift+Enter 换行"
         @keydown.enter.exact.prevent="sendMessageStream()"
         @input="autoResize"
@@ -109,7 +144,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick } from 'vue'
+import { ref, computed, nextTick, watch } from 'vue'
 import { useChatStore } from '@/stores/chat'
 import { useThemeStore } from '@/stores/theme'
 import { renderMarkdown } from '@/utils/markdown'
@@ -126,10 +161,59 @@ const inputRows = ref(2)
 
 const quickServices = [
   { code: 'order', icon: '📦', name: '查订单', text: '我想查一下我的订单' },
-  { code: 'product', icon: '🛍️', name: '商品咨询', text: '有什么优惠活动吗' },
+  { code: 'product', icon: '🛍️', name: '商品咨询', text: '我想看看有什么商品推荐' },
   { code: 'refund', icon: '💰', name: '退款退货', text: '如何申请退款' },
   { code: 'human', icon: '👤', name: '转人工', text: '转人工客服' },
 ]
+
+// P12：消息窗口化渲染，限制 DOM 节点数量（仅渲染最近 WINDOW_SIZE 条，可向上加载更早）
+const WINDOW_SIZE = 50
+const windowStart = ref(0)
+const visibleMessages = computed(() => chatStore.messages.slice(windowStart.value))
+const hiddenCount = computed(() => windowStart.value)
+watch(
+  () => chatStore.messages.length,
+  (len, prev) => {
+    // 仅在原本贴底时跟随新消息，避免正在浏览更早消息时视图跳动
+    if (windowStart.value >= prev - WINDOW_SIZE) {
+      windowStart.value = Math.max(0, len - WINDOW_SIZE)
+    }
+  },
+)
+watch(
+  () => chatStore.sessionId,
+  () => {
+    windowStart.value = 0
+  },
+)
+function loadEarlier() {
+  const el = messagesContainer.value
+  const prevHeight = el ? el.scrollHeight : 0
+  windowStart.value = Math.max(0, windowStart.value - WINDOW_SIZE)
+  // 预加载更早消息后保持当前可视位置稳定
+  nextTick(() => {
+    if (el) el.scrollTop = el.scrollHeight - prevHeight + el.scrollTop
+  })
+}
+
+// F2：会话满意度评价
+const ratingScore = ref(0)
+const ratingSubmitted = ref(false)
+const ratingDismissed = ref(false)
+const hasBotReply = computed(() =>
+  chatStore.messages.some((m) => !m.isUser && m.id !== 'welcome'),
+)
+const showRating = computed(
+  () => hasBotReply.value && !ratingSubmitted.value && !ratingDismissed.value,
+)
+function submitRating(n: number) {
+  ratingScore.value = n
+  chatStore.rateSession(n)
+  ratingSubmitted.value = true
+}
+function dismissRating() {
+  ratingDismissed.value = true
+}
 
 const sentimentEmoji = computed(() => {
   const map: Record<string, string> = { positive: '😊', neutral: '🤖', negative: '😔' }
@@ -220,8 +304,8 @@ function formatTime(timeStr: string): string {
   padding: 2px 8px;
   border-radius: 10px;
 }
-.status.online { background: #e8f5e9; color: #4caf50; }
-.status.offline { background: #ffebee; color: #f44336; }
+.status.online { background: #e8f5e9; color: #2e7d32; }
+.status.offline { background: #ffebee; color: #c62828; }
 
 .nav-btn {
   border: none !important;
@@ -336,7 +420,7 @@ function formatTime(timeStr: string): string {
   box-shadow: 0 1px 4px rgba(244, 67, 54, 0.15) !important;
 }
 
-.message-text { font-size: 14px; word-break: break-word; line-height: 1.7; }
+.message-text { font-size: 14px; word-break: break-word; line-height: 1.7; max-height: 320px; overflow-y: auto; }
 .message-text > :first-child { margin-top: 0; }
 .message-text > :last-child { margin-bottom: 0; }
 .message-text p { margin: 0 0 8px; }
@@ -356,15 +440,15 @@ function formatTime(timeStr: string): string {
 }
 .bubble-user .message-text :deep(a) { color: #fff; }
 .bubble-bot .message-text :deep(a) { color: #667eea; }
-.message-time { font-size: 10px; color: #bbb; margin-top: 4px; }
-.bubble-user .message-time { color: rgba(255,255,255,0.7); }
+.message-time { font-size: 10px; color: #595959; margin-top: 4px; }
+.bubble-user .message-time { color: rgba(255,255,255,0.9); }
 
 .intent-tag {
   display: inline-flex;
   align-items: center;
   gap: 4px;
   font-size: 10px;
-  color: #999;
+  color: #595959;
   margin-top: 6px;
   background: rgba(102, 126, 234, 0.08);
   padding: 2px 10px;
@@ -433,6 +517,60 @@ function formatTime(timeStr: string): string {
   transform: translateY(-2px);
   box-shadow: 0 4px 12px rgba(0,0,0,0.12) !important;
 }
+
+/* P12：更早消息入口 */
+.history-banner {
+  text-align: center;
+  font-size: 12px;
+  color: var(--accent);
+  background: rgba(102, 126, 234, 0.08);
+  border-radius: 14px;
+  padding: 6px 12px;
+  margin-bottom: 12px;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+.history-banner:hover { background: rgba(102, 126, 234, 0.16); }
+.history-banner:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* F2：会话评价条 */
+.rating-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  background: #fff;
+  border-top: 1px solid #eee;
+  font-size: 13px;
+  color: var(--text-secondary);
+  flex-wrap: wrap;
+}
+.rating-label { white-space: nowrap; }
+.rating-stars { display: flex; gap: 2px; }
+.rating-star {
+  border: none;
+  background: transparent;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  color: #ddd;
+  padding: 0 2px;
+  transition: color 0.15s ease, transform 0.15s ease;
+}
+.rating-star:hover { transform: scale(1.15); }
+.rating-star.active { color: #ffc107; }
+.rating-star:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+.rating-thanks { color: #2e7d32; font-weight: 600; }
+.rating-close {
+  margin-left: auto;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 16px;
+  line-height: 1;
+}
+.rating-close:hover { color: var(--text-primary); }
 
 .chat-input {
   display: flex;

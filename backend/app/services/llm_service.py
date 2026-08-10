@@ -163,11 +163,13 @@ class LLMService:
         self,
         prompt: str,
         temperature: float = 0.1,
+        max_tokens: Optional[int] = None,
     ) -> Optional[dict]:
-        """生成 JSON 结构化输出"""
+        """生成 JSON 结构化输出（P14：意图分类等短输出可传较小 max_tokens 降本提速）"""
         response = await self.generate(
             prompt + "\n请仅返回JSON格式，不要包含任何其他内容。",
             temperature=temperature,
+            max_tokens=max_tokens,
         )
         try:
             # 尝试提取 JSON

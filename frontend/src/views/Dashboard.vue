@@ -30,6 +30,15 @@
       </div>
     </template>
 
+    <template v-else-if="error">
+      <div class="error-state">
+        <div class="error-icon">⚠️</div>
+        <p class="empty-title">看板数据加载失败</p>
+        <p class="empty-hint">请检查网络后重试</p>
+        <el-button type="primary" @click="loadDashboard">重新加载</el-button>
+      </div>
+    </template>
+
     <template v-else>
       <div class="stats-grid">
         <div class="stat-card">
@@ -118,14 +127,17 @@ const dashboard = reactive({
 
 const loading = ref(true)
 const animated = ref(false)
+const error = ref(false)
 
 async function loadDashboard() {
   loading.value = true
+  error.value = false
   try {
     const data = await request.get('/api/v1/analytics/dashboard')
     Object.assign(dashboard, data)
   } catch (e) {
     console.error('加载看板失败:', e)
+    error.value = true
   } finally {
     loading.value = false
     // 触发柱状图入场动画
@@ -199,7 +211,7 @@ body.dark .demo-badge {
 }
 .stat-icon { font-size: 28px; margin-bottom: 6px; }
 .stat-value { font-size: 24px; font-weight: 700; color: #333; }
-.stat-label { font-size: 12px; color: #999; margin-top: 4px; }
+.stat-label { font-size: 12px; color: #595959; margin-top: 4px; }
 
 .charts-section {
   display: grid;
@@ -234,7 +246,7 @@ body.dark .demo-badge {
   width: 0;
   transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
 }
-.bar-value { width: 40px; font-size: 12px; color: #999; }
+.bar-value { width: 40px; font-size: 12px; color: #595959; }
 
 /* 情感分布 */
 .sentiment-pie { display: flex; flex-direction: column; gap: 12px; padding: 10px 0; }
@@ -243,12 +255,12 @@ body.dark .demo-badge {
 .sentiment-dot.positive, .sentiment-dot.正面 { background: #4caf50; }
 .sentiment-dot.neutral, .sentiment-dot.中性 { background: #ff9800; }
 .sentiment-dot.negative, .sentiment-dot.负面 { background: #f44336; }
-.sentiment-pct { margin-left: auto; color: #999; }
+.sentiment-pct { margin-left: auto; color: #595959; }
 
 /* 满意度趋势 — CSS 五星评分条 */
 .trend-list { display: flex; flex-direction: column; gap: 8px; }
 .trend-item { display: flex; align-items: center; gap: 12px; font-size: 13px; }
-.trend-date { width: 55px; color: #999; font-size: 12px; flex-shrink: 0; }
+.trend-date { width: 55px; color: #595959; font-size: 12px; flex-shrink: 0; }
 .star-bar {
   flex: 1;
   height: 18px;
@@ -299,6 +311,12 @@ body.dark .demo-badge {
 .skeleton-title { width: 40%; height: 16px; margin-bottom: 14px; }
 .skeleton-bar { height: 20px; background: #f0f0f0; border-radius: 10px; margin-bottom: 10px; }
 .skeleton-bar-sm { height: 14px; background: #f0f0f0; border-radius: 7px; margin-bottom: 8px; }
+
+/* 错误状态 */
+.error-state { text-align: center; padding: 60px 20px; }
+.error-icon { font-size: 48px; margin-bottom: 12px; }
+.empty-title { font-size: 16px; color: #555; font-weight: 600; margin-bottom: 8px; }
+.empty-hint { font-size: 13px; color: #595959; margin-bottom: 16px; }
 
 @keyframes shimmer {
   0% { background-position: 200% 0; }

@@ -264,13 +264,14 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  async function loadHistory() {
-    if (!sessionId.value) return
-    try {
-      messages.value = await fetchHistory(sessionId.value)
-    } catch (error) {
-      console.error('加载历史记录失败:', error)
-    }
+  // F8：历史合并——按消息 id 去重，并按时间排序，避免本地缓存与后端历史重复或乱序
+  function mergeMessages(existing: Message[], incoming: Message[]): Message[] {
+    const byId = new Map<string, Message>()
+    for (const m of existing) byId.set(m.id, m)
+    for (const m of incoming) if (!byId.has(m.id)) byId.set(m.id, m)
+    return Array.from(byId.values()).sort(
+      (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+    )
   }
 
   async function loadSessions() {
@@ -320,23 +321,44 @@ export const useChatStore = defineStore('chat', () => {
     isTyping.value = false
     activeSessionId.value = id
     sessionId.value = id
-    // 优先从本地缓存恢复（B1），缺失则回源后端历史接口
+    // 优先从本地缓存恢复（B1），缺失则回源后端历史接口并与本地缓冲去重合并（F8）
     const cached = messagesBySession.value[id]
     if (cached && cached.length) {
       messages.value = cached
     } else {
       try {
-        messages.value = await fetchHistory(id)
+        const incoming = await fetchHistory(id)
+        const buf = messagesBySession.value[id] || []
+        messages.value = mergeMessages(buf, incoming)
       } catch (error) {
         console.error('切换会话加载失败:', error)
-        messages.value = []
+        messages.value = messagesBySession.value[id] || []
       }
     }
     persistToLocal()
   }
 
   // ===== 本地持久化（B1） =====
+  // P13：节流（带尾随补偿）——避免每次状态变更都同步序列化全部会话，降低主线程卡顿
+  let _lastPersist = 0
+  let _persistTimer: ReturnType<typeof setTimeout> | null = null
+  const PERSIST_INTERVAL = 400
   function persistToLocal() {
+    const now = Date.now()
+    const remaining = PERSIST_INTERVAL - (now - _lastPersist)
+    if (remaining <= 0) {
+      _lastPersist = now
+      doPersist()
+    } else if (_persistTimer === null) {
+      _persistTimer = setTimeout(() => {
+        _persistTimer = null
+        _lastPersist = Date.now()
+        doPersist()
+      }, remaining)
+    }
+  }
+
+  function doPersist() {
     try {
       if (sessionId.value && messages.value.length) {
         messagesBySession.value[sessionId.value] = messages.value
@@ -361,6 +383,8 @@ export const useChatStore = defineStore('chat', () => {
         activeSessionId: activeSessionId.value,
         sessions: sessions.value,
         messagesBySession: messagesBySession.value,
+        // F7：持久化快捷回复，刷新后可直接恢复（无需再发一条消息才出现）
+        quickReplies: quickReplies.value,
       }
       localStorage.setItem(CACHE_KEY, JSON.stringify(payload))
     } catch (error) {
@@ -393,6 +417,8 @@ export const useChatStore = defineStore('chat', () => {
       const data = JSON.parse(raw)
       if (!data || typeof data !== 'object') return false
       sessions.value = Array.isArray(data.sessions) ? data.sessions : []
+      // F7：恢复快捷回复，避免刷新后快捷回复消失
+      quickReplies.value = Array.isArray(data.quickReplies) ? data.quickReplies : []
       messagesBySession.value =
         data.messagesBySession && typeof data.messagesBySession === 'object'
           ? data.messagesBySession
@@ -444,6 +470,17 @@ export const useChatStore = defineStore('chat', () => {
     persistToLocal()
   }
 
+  // F2：提交会话满意度评价（接线此前未使用的 chatApi.rateSession）
+  async function rateSession(score: number, comment?: string) {
+    if (!sessionId.value) return
+    try {
+      await chatApi.rateSession(sessionId.value, score, comment)
+    } catch (error) {
+      console.error('评价提交失败:', error)
+      throw error
+    }
+  }
+
   return {
     messages,
     sessionId,
@@ -459,10 +496,10 @@ export const useChatStore = defineStore('chat', () => {
     initSession,
     sendMessage,
     sendMessageStream,
-    loadHistory,
     loadSessions,
     startNewSession,
     selectSession,
+    rateSession,
     persistToLocal,
     restoreFromLocal,
     clearMessages,

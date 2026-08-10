@@ -1,61 +1,14 @@
-"""订单查询工具"""
+"""订单查询工具（F5 修复：订单数据统一从 app.data.mock_data 读取，杜绝双源漂移）"""
 from typing import Dict, Any, List, Optional
 import re
 import logging
 
+from app.data.mock_data import ORDERS
+
 logger = logging.getLogger(__name__)
 
-# Mock 订单数据
-MOCK_ORDERS: Dict[str, Dict] = {
-    "ORDER20260315001": {
-        "order_no": "ORDER20260315001",
-        "product_name": "Apple iPhone 15 Pro Max 256GB",
-        "quantity": 1,
-        "pay_amount": 9599.00,
-        "status": "shipped",
-        "status_text": "已发货",
-        "tracking_no": "SF1234567890",
-        "express_company": "顺丰速运",
-        "receiver_name": "张先生",
-        "receiver_phone": "138****6789",
-        "shipping_address": "北京市朝阳区建国路88号",
-        "created_at": "2026-03-15 10:30:00",
-        "shipped_at": "2026-03-16 14:20:00",
-        "estimated_delivery": "2026-03-18",
-    },
-    "ORDER20260401001": {
-        "order_no": "ORDER20260401001",
-        "product_name": "戴森吹风机 HD15",
-        "quantity": 1,
-        "pay_amount": 2699.00,
-        "status": "paid",
-        "status_text": "已支付，待发货",
-        "tracking_no": None,
-        "express_company": None,
-        "receiver_name": "李女士",
-        "receiver_phone": "139****1234",
-        "shipping_address": "上海市浦东新区世纪大道1000号",
-        "created_at": "2026-04-01 16:00:00",
-        "shipped_at": None,
-        "estimated_delivery": None,
-    },
-    "ORDER20260310005": {
-        "order_no": "ORDER20260310005",
-        "product_name": "Nike Air Jordan 1 Retro High OG",
-        "quantity": 1,
-        "pay_amount": 1499.00,
-        "status": "delivered",
-        "status_text": "已收货",
-        "tracking_no": "YT9876543210",
-        "express_company": "圆通速递",
-        "receiver_name": "王先生",
-        "receiver_phone": "136****5678",
-        "shipping_address": "广州市天河区体育西路100号",
-        "created_at": "2026-03-10 09:00:00",
-        "shipped_at": "2026-03-11 08:00:00",
-        "estimated_delivery": "2026-03-14",
-    },
-}
+# Mock 订单数据（单一来源，见 app/data/mock_data.py）
+MOCK_ORDERS = ORDERS
 
 
 class QueryOrderTool:
@@ -106,10 +59,17 @@ class QueryOrderTool:
         return {"success": True, "response": self._format_order_detail(order), "order": order}
 
     async def _query_user_orders(self, user_id: Optional[int]) -> Dict[str, Any]:
+        # F5：直接由单一数据源 ORDERS 派生，不再维护一份独立写死的列表
         mock_list = [
-            {"order_no": "ORDER20260401001", "product_name": "戴森吹风机 HD15", "pay_amount": 2699.00, "status": "paid", "status_text": "待发货", "created_at": "2026-04-01"},
-            {"order_no": "ORDER20260315001", "product_name": "Apple iPhone 15 Pro Max", "pay_amount": 9599.00, "status": "shipped", "status_text": "已发货", "created_at": "2026-03-15"},
-            {"order_no": "ORDER20260310005", "product_name": "Nike Air Jordan 1", "pay_amount": 1499.00, "status": "delivered", "status_text": "已收货", "created_at": "2026-03-10"},
+            {
+                "order_no": o["order_no"],
+                "product_name": o["product_name"],
+                "pay_amount": o["pay_amount"],
+                "status": o["status"],
+                "status_text": o["status_text"],
+                "created_at": o["created_at"],
+            }
+            for o in ORDERS.values()
         ]
         return {"success": True, "response": self._format_order_list(mock_list), "orders": mock_list}
 

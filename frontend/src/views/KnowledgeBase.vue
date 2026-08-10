@@ -36,7 +36,7 @@
         <div class="kb-header">
           <span class="kb-category">{{ item.category || '未分类' }}</span>
           <span class="kb-actions">
-            <el-button size="small" text @click="deleteItem(item)">🗑️</el-button>
+            <el-button size="small" text title="删除知识条目" aria-label="删除知识条目" @click="deleteItem(item)">🗑️</el-button>
           </span>
         </div>
         <div class="kb-question">Q: {{ item.question }}</div>
@@ -52,34 +52,30 @@
     </div>
 
     <!-- 添加知识对话框 -->
-    <el-dialog v-model="showAddDialog" title="添加知识" width="500px">
-      <el-form :model="addForm" label-width="80px">
-        <el-form-item label="分类">
+    <el-dialog v-model="showAddDialog" title="添加知识" width="500px" @closed="resetForm">
+      <el-form ref="formRef" :model="addForm" :rules="formRules" label-width="80px">
+        <el-form-item label="分类" prop="category">
           <el-select v-model="addForm.category" placeholder="选择分类" clearable>
             <el-option v-for="c in categories" :key="c" :label="c" :value="c" />
           </el-select>
         </el-form-item>
-        <el-form-item label="问题" required>
+        <el-form-item label="问题" prop="question">
           <el-input
             v-model="addForm.question"
             type="textarea"
             :rows="2"
             placeholder="输入常见问题"
-            :class="{ 'is-error': questionError }"
           />
-          <span v-if="questionError" class="field-error">请输入问题</span>
         </el-form-item>
-        <el-form-item label="答案" required>
+        <el-form-item label="答案" prop="answer">
           <el-input
             v-model="addForm.answer"
             type="textarea"
             :rows="4"
             placeholder="输入答案"
-            :class="{ 'is-error': answerError }"
           />
-          <span v-if="answerError" class="field-error">请输入答案</span>
         </el-form-item>
-        <el-form-item label="关键词">
+        <el-form-item label="关键词" prop="keywords">
           <el-input v-model="addForm.keywords" placeholder="空格分隔" />
         </el-form-item>
         <el-form-item>
@@ -96,6 +92,7 @@
 import { ref, reactive, onMounted } from 'vue'
 import request from '@/utils/request'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import type { FormInstance, FormRules } from 'element-plus'
 
 const searchKeyword = ref('')
 const items = ref<any[]>([])
@@ -103,8 +100,7 @@ const categories = ref<string[]>([])
 const showAddDialog = ref(false)
 const adding = ref(false)
 const searched = ref(false)
-const questionError = ref(false)
-const answerError = ref(false)
+const formRef = ref<FormInstance>()
 
 const addForm = reactive({
   category: '',
@@ -112,6 +108,11 @@ const addForm = reactive({
   answer: '',
   keywords: '',
 })
+
+const formRules: FormRules = {
+  question: [{ required: true, message: '请输入问题', trigger: 'blur' }],
+  answer: [{ required: true, message: '请输入答案', trigger: 'blur' }],
+}
 
 async function search() {
   if (!searchKeyword.value.trim()) return
@@ -155,15 +156,17 @@ async function deleteItem(item: any) {
 }
 
 async function addKnowledge() {
-  questionError.value = !addForm.question.trim()
-  answerError.value = !addForm.answer.trim()
-  if (questionError.value || answerError.value) return
+  if (!formRef.value) return
+  try {
+    await formRef.value.validate()
+  } catch {
+    return // 校验未通过，不提交
+  }
 
   adding.value = true
   try {
     await request.post('/api/v1/knowledge/add', { ...addForm })
     showAddDialog.value = false
-    resetForm()
     searchKeyword.value = addForm.question
     await search()
   } catch (e) {
@@ -178,8 +181,7 @@ function resetForm() {
   addForm.question = ''
   addForm.answer = ''
   addForm.keywords = ''
-  questionError.value = false
-  answerError.value = false
+  formRef.value?.clearValidate()
 }
 
 async function loadCategories() {
@@ -213,7 +215,7 @@ onMounted(loadCategories)
 .empty-state {
   text-align: center;
   padding: 60px 20px;
-  color: #999;
+  color: #595959;
 }
 .empty-icon { font-size: 48px; margin-bottom: 12px; }
 .empty-title { font-size: 16px; color: #666; margin-bottom: 6px; }
@@ -256,23 +258,17 @@ onMounted(loadCategories)
   opacity: 0.3;
   transition: opacity 0.2s ease;
 }
-.kb-card:hover .kb-actions { opacity: 1; }
+.kb-card:hover .kb-actions,
+.kb-card:focus-within .kb-actions { opacity: 1; }
+/* 触屏设备无 hover 态，操作按钮常驻可见（U9） */
+@media (hover: none) {
+  .kb-actions { opacity: 1; }
+}
 
 .kb-question { font-weight: 600; margin-bottom: 6px; color: #333; }
 .kb-answer { font-size: 14px; color: #666; line-height: 1.6; }
 .kb-score { font-size: 11px; margin-top: 8px; }
 .kb-score.score-high { color: #4caf50; }
 .kb-score.score-mid { color: #ff9800; }
-.kb-score.score-low { color: #999; }
-
-/* 表单校验 */
-.field-error {
-  color: #f56c6c;
-  font-size: 12px;
-  line-height: 1;
-  margin-top: 4px;
-}
-:deep(.is-error .el-textarea__inner) {
-  border-color: #f56c6c;
-}
+.kb-score.score-low { color: #595959; }
 </style>

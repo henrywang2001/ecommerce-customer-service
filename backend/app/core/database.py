@@ -37,17 +37,6 @@ def _get_session_factory():
     return _async_session_factory
 
 
-# 兼容旧代码的懒加载属性
-@property
-def engine():
-    return _get_engine()
-
-
-@property
-def async_session_factory():
-    return _get_session_factory()
-
-
 async def get_db() -> AsyncSession:
     """FastAPI 依赖注入：获取数据库会话"""
     async with _get_session_factory() as session:

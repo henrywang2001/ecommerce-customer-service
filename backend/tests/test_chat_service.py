@@ -8,8 +8,11 @@ from app.services.chat_service import chat_service
 
 
 def test_order_query_returns_real_order(patch_embedding, patch_intent_order):
-    """M6：order_query 委派 QueryOrderTool，返回真实订单（含戴森，非 iPhone）。"""
-    res = asyncio.run(chat_service.send_message("s_order", "查订单 ORDER20260401001", None))
+    """M6：order_query 委派 QueryOrderTool，返回真实订单（含戴森，非 iPhone）。
+
+    F6：query_order 需要登录（requires_auth），须携带已认证 user_id。
+    """
+    res = asyncio.run(chat_service.send_message("s_order", "查订单 ORDER20260401001", 1))
     assert res["intent"]["intent_code"] == "order_query"
     assert "戴森" in res["response"]
     assert "iPhone" not in res["response"]
@@ -37,8 +40,11 @@ def test_transfer_wires_tool(patch_embedding, patch_intent_transfer):
 
 
 def test_ticket_create_wires_tool(patch_embedding, patch_intent_ticket):
-    """M6：新增 ticket_create 意图，委派 CreateTicketTool。"""
-    res = asyncio.run(chat_service.send_message("s_ticket", "我要提交工单反馈问题", None))
+    """M6：新增 ticket_create 意图，委派 CreateTicketTool。
+
+    F6：create_ticket 需要登录（requires_auth），须携带已认证 user_id。
+    """
+    res = asyncio.run(chat_service.send_message("s_ticket", "我要提交工单反馈问题", 1))
     assert res["intent"]["intent_code"] == "ticket_create"
     assert "工单" in res["response"]
 
@@ -53,8 +59,8 @@ def test_history_and_delete_idempotent(patch_embedding, patch_llm, patch_intent_
     assert hist["total"] == 2  # user + assistant
 
     assert asyncio.run(chat_service.delete_session(sid)) is True
-    # 删除不存在的 id 仍幂等返回 True
-    assert asyncio.run(chat_service.delete_session("nonexistent_id_x")) is True
+    # F1：删除不存在的 id 幂等，但返回 False 表示"该会话此前并不存在"
+    assert asyncio.run(chat_service.delete_session("nonexistent_id_x")) is False
 
 
 def test_send_message_structure(patch_embedding, patch_llm, patch_intent_llm):

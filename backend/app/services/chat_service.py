@@ -217,6 +217,7 @@ class ChatService:
         content: str,
         user_id: Optional[int] = None,
         content_type: str = "text",
+        preferred_intent: Optional[str] = None,
     ) -> Dict[str, Any]:
         """处理用户消息并返回回复 — 全链路 Langfuse 追踪"""
         logger.info(f"处理消息: session={session_id}, content={(content or '')[:50]}...")
@@ -240,35 +241,34 @@ class ChatService:
             },
         ) as root_span:
 
-            # 2. 意图识别
-            with observe.span(
-                name="intent-recognition",
-                input={"text": content},
-            ) as intent_span:
-                intent_result = await intent_service.recognize(content, user_id)
-                if intent_span is not None:
-                    intent_span.update(
-                        output={
-                            "intent_code": intent_result.intent_code,
-                            "intent_name": intent_result.intent_name,
-                            "confidence": intent_result.confidence,
-                            "handler_type": intent_result.handler_type,
-                        }
+            # 2 & 3. 意图识别 + 情感分析（P14：两者相互独立，并发执行省去一次串行等待）
+            async def _recognize():
+                with observe.span(name="intent-recognition", input={"text": content}) as span:
+                    res = await intent_service.recognize(
+                        content, user_id, preferred_intent=preferred_intent
                     )
+                    if span is not None:
+                        span.update(output={
+                            "intent_code": res.intent_code,
+                            "intent_name": res.intent_name,
+                            "confidence": res.confidence,
+                            "handler_type": res.handler_type,
+                        })
+                    return res
 
-            # 3. 情感分析
-            with observe.span(
-                name="sentiment-analysis",
-                input={"text": content},
-            ) as sent_span:
-                sent_type, sent_score = await sentiment_service.analyze(content)
-                if sent_span is not None:
-                    sent_span.update(
-                        output={
-                            "sentiment": sent_type.value,
-                            "score": round(sent_score, 2),
-                        }
-                    )
+            async def _sentiment():
+                with observe.span(name="sentiment-analysis", input={"text": content}) as span:
+                    s_type, s_score = await sentiment_service.analyze(content)
+                    if span is not None:
+                        span.update(output={
+                            "sentiment": s_type.value,
+                            "score": round(s_score, 2),
+                        })
+                    return s_type, s_score
+
+            intent_result, (sent_type, sent_score) = await asyncio.gather(
+                _recognize(), _sentiment()
+            )
 
             # 4. 根据意图类型处理
             response_text = ""
@@ -385,6 +385,7 @@ class ChatService:
         content: str,
         user_id: Optional[int] = None,
         content_type: str = "text",
+        preferred_intent: Optional[str] = None,
     ):
         """流式处理用户消息，逐 token 产出 SSE 片段（P6）。
 
@@ -398,10 +399,11 @@ class ChatService:
             return f"data: {json.dumps({'type': event_type, **payload}, ensure_ascii=False)}\n\n"
 
         with observe.span(name="chat-stream-message", input={"session_id": session_id, "content": content}) as root_span:
-            # 意图识别
-            intent_result = await intent_service.recognize(content, user_id)
-            # 情感分析
-            sent_type, sent_score = await sentiment_service.analyze(content)
+            # 意图识别 + 情感分析（P14：并发执行，省去一次串行等待）
+            intent_result, (sent_type, sent_score) = await asyncio.gather(
+                intent_service.recognize(content, user_id, preferred_intent=preferred_intent),
+                sentiment_service.analyze(content),
+            )
 
             response_text = ""
             quick_replies: List[str] = []
@@ -497,7 +499,14 @@ class ChatService:
             )
 
     async def _handle_transfer(self, session_id: str, content: str, intent_result, user_id: Optional[int], reason: str = "用户主动请求") -> str:
-        """转人工：委派 TransferHumanTool（ReAct 工具接线）"""
+        """转人工：委派 TransferHumanTool（ReAct 工具接线）。
+
+        F11 修复：聊天文本触发的转人工（intent=transfer）此前不会更新会话状态，
+        导致状态机与实际流转脱节（看板/列表无法反映「已转人工」）。此处复用
+        SessionManager.mark_transferred 将会话状态置为 transferred，与 /chat/transfer
+        端点（transfer_to_human）保持一致。
+        """
+        await self.sm.mark_transferred(session_id)
         agent = self.sm.get_agent(session_id)
         if agent is not None:
             result = await agent.execute_tool(
@@ -581,7 +590,12 @@ class ChatService:
         return mapping.get(intent_code, ["查订单", "商品咨询", "转人工"])
 
     async def get_history(self, session_id: str, page: int = 1, page_size: int = 20) -> Dict[str, Any]:
-        """获取对话历史"""
+        """获取对话历史（B10：对分页参数做非负/上限裁剪，作为路由 Query 约束的防御性兜底）"""
+        try:
+            page = max(1, int(page))
+            page_size = max(1, min(int(page_size), 100))
+        except (TypeError, ValueError):
+            page, page_size = 1, 20
         all_messages = self.sm.get_conversation(session_id)
         total = len(all_messages)
         start = (page - 1) * page_size

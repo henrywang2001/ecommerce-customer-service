@@ -1,7 +1,7 @@
 """对话 API 路由"""
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Body, Query
 from fastapi.responses import StreamingResponse
 import json
 import logging
@@ -28,10 +28,16 @@ def _resolve_user_id(request: Request, fallback: Optional[int]) -> Optional[int]
 
 
 @router.post("/session", response_model=CreateSessionResponse)
-async def create_session(req: CreateSessionRequest = None, request: Request = None):
-    """创建新会话"""
-    if req is None:
-        req = CreateSessionRequest()
+async def create_session(
+    req: CreateSessionRequest = Body(default_factory=CreateSessionRequest),
+    request: Request = None,
+):
+    """创建新会话。
+
+    F10 修复：原先把 Pydantic 请求体参数默认设为 ``None``（反模式），使本应可校验的
+    body 变成「可缺省」，绕过参数校验且语义含糊。改为 ``Body(default_factory=...)``，
+    既保留「可不传 body」的向后兼容（前端发送 ``{}`` 仍可用），又让必填字段可被正常校验。
+    """
     result = await chat_service.create_session(
         user_id=_resolve_user_id(request, req.user_id),
         channel=req.channel,
@@ -74,8 +80,12 @@ async def send_message_stream(req: SendMessageRequest, request: Request = None):
 
 
 @router.get("/history", response_model=MessageListResponse)
-async def get_history(session_id: str, page: int = 1, page_size: int = 20):
-    """获取对话历史"""
+async def get_history(
+    session_id: str,
+    page: int = Query(1, ge=1, le=1000, description="页码，从 1 开始"),
+    page_size: int = Query(20, ge=1, le=100, description="每页条数，范围 1~100"),
+):
+    """获取对话历史（B10 修复：为分页参数加边界约束，避免非法 page/page_size 产生异常切片）"""
     result = await chat_service.get_history(session_id, page, page_size)
     return MessageListResponse(**result)
 

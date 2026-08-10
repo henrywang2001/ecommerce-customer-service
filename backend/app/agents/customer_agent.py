@@ -44,6 +44,16 @@ class CustomerServiceAgent(BaseAgent):
         if tool is None:
             return {"success": False, "response": f"未找到工具: {tool_name}"}
 
+        # ── F1: requires_auth 强制执行 ──
+        # 需要登录的工具（如 query_order）在未携带已认证 user_id 时直接拦截，
+        # 避免匿名用户获取订单等敏感数据。user_id 来自令牌（生产）或登录态（demo），不可伪造。
+        if getattr(tool, "requires_auth", False) and not self.user_id:
+            return {
+                "success": False,
+                "response": "🔒 该操作需要登录后查看，请先登录您的账号。",
+                "requires_auth": True,
+            }
+
         # ── Langfuse: agent tool 执行追踪 ──
         with observe.tool(
             name=f"agent-tool-{tool_name}",

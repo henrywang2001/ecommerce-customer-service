@@ -71,14 +71,17 @@ class SentimentService:
         return total_score / word_count
 
     def _is_negated(self, text: str, word: str) -> bool:
-        """检查情感词是否被否定词修饰"""
-        for neg in self.NEGATION_WORDS:
-            if neg in text:
-                idx = text.find(neg)
-                w_idx = text.find(word)
-                if 0 < w_idx - idx < 5:
-                    return True
-        return False
+        """检查情感词是否被否定词修饰（B11 修复：改为情感词左侧局部窗口判定）。
+
+        原实现用「否定词在全文本首次出现」与「情感词首次出现」的全局字符距离，
+        易误判远距离/伪否定。现仅考察情感词左侧固定窗口（默认 4 个字符）内是否存在
+        紧邻的否定词，使否定判定更贴近语言学就近原则，降低误反转概率。
+        """
+        w_idx = text.find(word)
+        if w_idx < 0:
+            return False
+        left_window = text[max(0, w_idx - 4):w_idx]
+        return any(neg in left_window for neg in self.NEGATION_WORDS)
 
     def _rule_analysis(self, text: str) -> float:
         """规则辅助分析（B4：负向修正，允许规则分为负）"""

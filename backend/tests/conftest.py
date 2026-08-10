@@ -55,7 +55,7 @@ def patch_llm(monkeypatch):
 
 
 def _patch_intent(monkeypatch, code: str, handler_type: str):
-    async def fake(text, user_id=None):
+    async def fake(text, user_id=None, preferred_intent=None):
         return _make_intent(code, handler_type)
 
     monkeypatch.setattr(intent_service.intent_service, "recognize", fake)

@@ -11,6 +11,11 @@ build/
 # 环境变量（包含 API Key，绝不上传）
 .env
 !.env.example
+# 前端本地环境变量（Vite 约定：可能含密钥，避免误提交）
+*.env.local
+
+# Windows 保留设备名误创建的文件（重定向写错时的垃圾文件）
+nul
 
 # Node.js
 node_modules/

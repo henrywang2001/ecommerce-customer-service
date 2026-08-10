@@ -9,7 +9,7 @@
 | pip | 最新版 |
 | npm | 最新版 |
 
-> 注意：MySQL 和 Redis 为可选依赖，不配置时系统使用内存模式运行。
+> 注意：MySQL、Redis、ChromaDB 均为可选依赖，不配置时系统自动降级运行（内存模式 / 有界内存缓存 / 关键词检索）。
 
 ---
 
@@ -52,15 +52,31 @@ python scripts/init_vector_db.py
 ```
 
 > 不安装 chromadb 也能运行，系统会自动使用内置知识库做关键词匹配。
+> 向量数据持久化目录默认为 `backend/chroma_db`（已配置为绝对路径，不依赖启动目录）。
 
 ### 5. 环境变量说明
 
-项目已预配置 `.env` 文件，模型及 API Key 通过环境变量注入：
-- **LLM**: DeepSeek `deepseek-v4-flash` → 环境变量 `LLM_API_KEY`
-- **Embedding**: 千问 `text-embedding-v1` → 环境变量 `EMBEDDING_API_KEY`
-- **可观测性**: Langfuse → 环境变量 `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY`
+将 `backend/.env.example` 复制为 `backend/.env` 并按需修改。**`.env` 已被 `.gitignore` 排除，绝不会提交到版本库。**
 
-如需修改，编辑 `backend/.env` 中对应的环境变量。
+```bash
+# 鉴权（生产环境必改）
+SECRET_KEY=change-me-to-a-random-secret
+REQUIRE_AUTH=true          # true=全站需 Bearer JWT；false=demo 免鉴权
+
+# LLM: DeepSeek
+LLM_API_KEY=your-deepseek-api-key
+LLM_MODEL=deepseek-v4-flash
+
+# Embedding: 千问
+EMBEDDING_API_KEY=your-dashscope-api-key
+
+# Langfuse 可观测性（可选）
+LANGFUSE_PUBLIC_KEY=
+LANGFUSE_SECRET_KEY=
+```
+
+> **SECRET_KEY**：若使用占位值，系统会在每次启动时自动生成随机密钥（旧令牌失效）。生产环境务必配置固定且随机的 `SECRET_KEY`，否则重启后所有已登录用户需重新登录。
+> 完整配置项见 `backend/.env.example`（含 RAG / Agent / 限流 / 上游弹性 / 转人工策略等）。
 
 ### 6. 启动后端服务
 
@@ -87,9 +103,36 @@ python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 - 健康检查：http://localhost:8000/health
 - 首页：http://localhost:8000/
 
+> `/` 与 `/health` 为永远公开路由；`/docs` 仅在 `DEBUG=true` 时公开。其余接口在 `REQUIRE_AUTH=true` 下均需 Bearer JWT。
+
 ---
 
-## 二、前端运行
+## 二、鉴权与演示账号
+
+系统内置 JWT 鉴权，`REQUIRE_AUTH` 默认开启。前端自动完成登录态管理；直接调 API 时需先登录获取 token。
+
+### 演示账号（内存用户表预置，仅本地演示）
+
+| 用户名 | 密码 | 角色 |
+|--------|------|------|
+| `alice` | `Alice@123` | customer |
+| `bob` | `Bob@123` | customer |
+| `admin` | `Admin@123` | admin |
+
+### 鉴权接口
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/v1/auth/register` | 注册（成功即签发 JWT） |
+| POST | `/api/v1/auth/login` | 登录 |
+| GET | `/api/v1/auth/me` | 当前用户信息 |
+
+> 会话、订单等数据按登录用户隔离；未登录时敏感工具（查订单/建工单）会被拦截并提示"请先登录"。
+> 生产环境应将 `user_service` 的内存用户表替换为数据库实现（接口保持不变即可）。
+
+---
+
+## 三、前端运行
 
 ### 1. 进入前端目录
 
@@ -109,17 +152,18 @@ npm install
 npm run dev
 ```
 
-访问 http://localhost:5173 即可看到聊天界面。
+访问 http://localhost:5173 ，**首次进入需登录/注册**（可用上方演示账号）。
 
 > 前端通过 Vite 代理将 `/api` 请求转发到后端 `http://localhost:8000`，无需额外配置。
+> 如需直连后端，可在 `frontend/.env.local` 设置 `VITE_API_BASE_URL=http://localhost:8000`。
 
 ---
 
-## 三、测试对话
+## 四、测试对话
 
 ### 1. 通过前端测试
 
-打开浏览器访问 http://localhost:5173，在聊天框输入问题，例如：
+打开浏览器访问 http://localhost:5173 ，登录后进入聊天页，输入例如：
 
 - "你好"
 - "我想查一下我的订单"
@@ -127,41 +171,65 @@ npm run dev
 - "有什么优惠活动"
 - "转人工客服"
 
+> 聊天默认走 **SSE 流式输出**，逐 token 渲染；机器人回复后可在消息下方进行 **1-5 星满意度评价**。
+
 ### 2. 通过 API 测试
+
+先登录获取 token：
+
+```bash
+# 登录（演示账号）
+curl -X POST http://localhost:8000/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username": "alice", "password": "Alice@123"}'
+# 返回 access_token，后续请求放入 Authorization: Bearer <token>
+
+TOKEN="<上一步返回的 access_token>"
+AUTH="Authorization: Bearer $TOKEN"
+```
+
+然后带 token 调用业务接口：
 
 ```bash
 # 创建会话
 curl -X POST http://localhost:8000/api/v1/chat/session \
-  -H "Content-Type: application/json" \
+  -H "Content-Type: application/json" -H "$AUTH" \
   -d '{"channel": "web"}'
 
 # 发送消息（替换 YOUR_SESSION_ID）
 curl -X POST http://localhost:8000/api/v1/chat/send \
-  -H "Content-Type: application/json" \
+  -H "Content-Type: application/json" -H "$AUTH" \
   -d '{"session_id": "YOUR_SESSION_ID", "content": "退换货政策是什么"}'
+
+# 流式发送（SSE，逐 token 返回）
+curl -N -X POST http://localhost:8000/api/v1/chat/send_stream \
+  -H "Content-Type: application/json" -H "$AUTH" \
+  -d '{"session_id": "YOUR_SESSION_ID", "content": "我想查一下订单 ORDER20260315001 的物流"}'
 
 # 意图识别测试
 curl -X POST http://localhost:8000/api/v1/intent/recognize \
-  -H "Content-Type: application/json" \
+  -H "Content-Type: application/json" -H "$AUTH" \
   -d '{"text": "我想查一下订单 ORDER20260315001 的物流"}'
 ```
 
+> 昂贵接口（`/chat/send`、`/chat/send_stream`、`/agent/process`）有限流：30 次/分钟，超限返回 429。
+
 ### 3. 通过 Swagger 文档测试
 
-打开 http://localhost:8000/docs，直接通过交互式文档测试各接口。
+打开 http://localhost:8000/docs，先调 `/api/v1/auth/login` 获取 token，点击右上角 **Authorize** 填入 `Bearer <token>`，即可交互式测试各接口。
 
 ---
 
-## 四、常见问题
+## 五、常见问题
 
 ### Q: 数据库连接失败？
-A: 系统无需数据库即可运行。对话历史和会话信息存储在内存中（重启后丢失）。如需持久化，请配置 MySQL。
+A: 系统无需数据库即可运行。对话历史、会话信息和用户表存储在内存中（重启后丢失）。如需持久化，请配置 MySQL。
 
 ### Q: LLM 调用失败？
-A: 检查 `.env` 中的 `LLM_API_KEY` 是否正确，以及网络是否能访问 DeepSeek API（`https://api.deepseek.com`）。
+A: 检查 `.env` 中的 `LLM_API_KEY` 是否正确，以及网络是否能访问 DeepSeek API（`https://api.deepseek.com`）。上游已内置重试 + 熔断，持续失败多为网络问题。
 
 ### Q: Embedding 调用失败？
-A: 检查 `.env` 中的 `EMBEDDING_API_KEY` 是否正确，以及网络是否能访问阿里云 DashScope API（`https://dashscope.aliyuncs.com`）。
+A: 检查 `.env` 中的 `EMBEDDING_API_KEY` 是否正确，以及网络是否能访问阿里云 DashScope API（`https://dashscope.aliyuncs.com`）。Embedding 不可用时系统自动降级为纯关键词检索。
 
 ### Q: ChromaDB 安装失败？
 A: ChromaDB 在 Windows 上可能需要 Visual C++ 运行时。不安装也不影响使用，系统会自动回退到关键词匹配。
@@ -169,29 +237,66 @@ A: ChromaDB 在 Windows 上可能需要 Visual C++ 运行时。不安装也不�
 ### Q: 前端端口冲突？
 A: 编辑 `frontend/vite.config.ts`，修改 `server.port` 的值。
 
+### Q: 接口返回 401 / 登录页一直跳转？
+A: 后端默认 `REQUIRE_AUTH=true`，未带 token 或 token 过期会 401。先登录拿 token；若配置了占位 `SECRET_KEY`，后端重启后旧 token 全部失效，需重新登录。
+
+### Q: 如何关闭鉴权做纯演示？
+A: 在 `backend/.env` 设置 `REQUIRE_AUTH=false` 后重启后端。此时所有接口免鉴权放行，前端仍会尝试登录（演示账号可直接登录）。
+
 ---
 
-## 五、架构特性说明
+## 六、架构特性说明
 
 ### 会话生命周期管理
 
 - **容量上限**：内存中最多保持 200 个活跃会话，超出时按 LRU 淘汰
-- **空闲 TTL**：24 小时无活动自动清理，清理在创建/发送消息时惰性触发
-- **本地缓存**：前端存储最近 10 个会话，刷新页面可恢复
+- **空闲 TTL**：24 小时无活动自动清理（当前会话豁免）
+- **用户隔离**：会话按登录用户隔离，`GET /api/v1/chat/sessions` 只返回当前用户的会话
+- **本地缓存**：前端按会话缓存消息，支持历史合并去重与恢复
 
 ### 安全机制
 
-- **全局限流**：基于 IP 的频率限制中间件，防止 API 滥用
-- **JWT 鉴权**：生产环境可通过 `REQUIRE_AUTH=true` 开启全站 Bearer 认证（默认关闭以方便 demo）
+- **全站 JWT 鉴权**：`REQUIRE_AUTH=true`（默认）时所有接口需 Bearer JWT，中间件统一校验
+- **占位密钥加固**：`SECRET_KEY` 若为占位值，运行时自动生成随机密钥并告警，杜绝硬编码密钥
+- **全局限流**：基于 IP 的频率限制中间件 + 昂贵接口差异化限流（30 次/分钟），防止 API 滥用
+- **敏感工具鉴权**：查订单/建工单等工具 `requires_auth`，未登录用户会被拦截
 - **密钥隔离**：所有 API Key 通过 `backend/.env` 注入，`.env` 已加入 `.gitignore` 不会上传
 
 ### RAG 双路检索
 
-向量数据库检索（ChromaDB）与内置知识库关键词匹配并行执行，结果合并去重。当 Embedding 不可用（返回零向量）时自动降级为纯关键词检索。
+- **架构**：`chroma_client.py` 提供 ChromaDB 客户端单例 + collection 非空缓存（P10），`vector_store.py` 复用该单例，检索统一走 `rag_service.search()`
+- **双路合并**：Chroma 向量检索与内置知识库关键词匹配并行执行，结果合并去重，按 id 去重取高分、降序截取 top_k，向量分数 min-max 归一化到 [0,1]
+- **降级**：Embedding 不可用（返回零向量）时自动降级为纯关键词检索
+
+### 数据收敛（单一数据源）
+
+- 订单/商品数据统一存放在 `backend/app/data/mock_data.py`，路由层与对话工具层均从此读取，消除双源漂移
+- 记录采用对话工具所需的"富字段"结构（`product_name / status_text / rating / sales / tags` 等），对外契约保持一致
 
 ### Agent 工具接线
 
-6 个工具（search_knowledge / query_order / query_product / refund / create_ticket / transfer_human）已通过 `_handle_with_tools` 和 `_handle_transfer` 方法接入 Agent 执行链，意图识别后按 `handler_type` 分发。
+6 个工具（search_knowledge / query_order / query_product / refund / create_ticket / transfer_human）已通过 `_handle_with_tools` 和 `_handle_transfer` 方法接入 Agent 执行链，意图识别后按 `handler_type` 分发。意图识别支持 `preferred_intent` 预识别短路，跳过 LLM 调用保证链路一致。
+
+### 意图识别体系
+
+- 11 个意图码：product_inquiry / order_query / refund_request / ticket_create / complaint / human_agent / payment_issue / shipping_info / promotion / greeting / fallback
+- **同义词归一化**：37 组意图同义词映射，LLM 返回未知码时按"标准码 → 同义词 → 模糊包含 → 关键词结果"逐级归一
+- 意图识别与情感分析在消息处理中**并发执行**，节省串行等待
+
+### 流式输出
+
+- `POST /api/v1/chat/send_stream` 返回 SSE（`text/event-stream`），事件类型：`token`（逐片段）/ `done`（携带 response/intent/sentiment/quick_replies/need_transfer）/ `error`
+- 前端用 fetch + ReadableStream 手写 SSE 解析，逐 token 渲染；出错且无 token 时自动回退非流式
+
+### 缓存机制
+
+- **优先 Redis**：连接失败自动降级，不再重试
+- **内存回退**：有界（maxsize=1000）+ TTL（默认 3600s）+ FIFO 淘汰，长期运行不会内存膨胀
+
+### 上游弹性（重试 + 熔断 + 并发控制）
+
+- LLM / Embedding 上游：最大并发各 20，失败重试 3 次（指数退避 0.5s→8s）
+- 熔断器：5 次失败进入冷却 30s，快速失败保护下游
 
 ### LLM 模型配置
 
@@ -236,21 +341,3 @@ chat-send-message (根 span)
 ```
 
 > 未配置 API Key 时，所有追踪代码自动降级为 no-op，不影响业务运行。
-
-### 意图分类体系
-
-| 分类 | 意图代码 | 处理方式 |
-|------|----------|----------|
-| 商品咨询 | product_inquiry | 工具调用（SearchKnowledgeTool） |
-| 订单查询 | order_query | 工具调用（QueryOrderTool） |
-| 退款退货 | refund_request | 工具调用（RefundTool） |
-| 提交工单 | ticket_create | 工具调用（CreateTicketTool） |
-| 投诉 | complaint | 转人工（TransferHumanTool） |
-| 转人工 | human_agent | 转人工 |
-| 支付问题 | payment_issue | RAG 检索 |
-| 配送查询 | shipping_info | RAG 检索 |
-| 促销活动 | promotion | RAG 检索 |
-| 问候 | greeting | LLM 直接回复 |
-| 兜底 | fallback | LLM 直接回复 |
-
-> 所有工具调用已通过 Agent ReAct 框架接线（`_handle_with_tools` → `agent.execute_tool`），不再使用硬编码 Mock 数据。

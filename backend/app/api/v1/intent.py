@@ -10,7 +10,4 @@ router = APIRouter()
 async def recognize_intent(req: IntentRecognizeRequest):
     """识别文本意图"""
     result = await intent_service.recognize(req.text, req.user_id)
-    return IntentRecognizeResponse(
-        intent=result,
-        entities=result.entities,
-    )
+    return IntentRecognizeResponse(intent=result)

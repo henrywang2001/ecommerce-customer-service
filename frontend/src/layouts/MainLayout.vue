@@ -23,13 +23,21 @@
           :key="s.sessionId"
           class="session-item"
           :class="{ active: s.sessionId === chatStore.sessionId }"
-          @click="chatStore.selectSession(s.sessionId); router.push('/'); sidebarOpen = false"
+          role="button"
+          tabindex="0"
+          :aria-current="s.sessionId === chatStore.sessionId ? 'page' : undefined"
+          :aria-label="`选择会话 ${sessionLabel(s)}，点击进入对话`"
+          @click="onSelectSession(s)"
+          @keydown.enter.prevent="onSelectSession(s)"
+          @keydown.space.prevent="onSelectSession(s)"
         >
           <div class="session-label">{{ sessionLabel(s) }}</div>
           <div class="session-time">{{ sessionTime(s) }}</div>
           <button
             class="session-del"
+            type="button"
             title="删除会话"
+            aria-label="删除会话"
             @click="onDeleteSession(s, $event)"
           >🗑️</button>
         </div>
@@ -40,12 +48,12 @@
       </div>
 
       <nav class="sidebar-nav">
-        <div class="nav-entry" @click="router.push('/dashboard'); sidebarOpen = false">
+        <button class="nav-entry" type="button" @click="router.push('/dashboard'); sidebarOpen = false">
           📊 看板
-        </div>
-        <div class="nav-entry" @click="router.push('/knowledge'); sidebarOpen = false">
+        </button>
+        <button class="nav-entry" type="button" @click="router.push('/knowledge'); sidebarOpen = false">
           📚 知识库
-        </div>
+        </button>
       </nav>
 
       <!-- 用户区（F6：登录态展示与退出） -->
@@ -129,6 +137,12 @@ function sessionTime(s: SessionInfo): string {
     hour: '2-digit',
     minute: '2-digit',
   })}`
+}
+
+function onSelectSession(s: SessionInfo) {
+  chatStore.selectSession(s.sessionId)
+  router.push('/')
+  sidebarOpen.value = false
 }
 
 async function onDeleteSession(s: SessionInfo, event: Event) {
@@ -247,11 +261,26 @@ async function handleNewChat() {
   opacity: 0;
   transition: opacity 0.2s ease, background 0.2s ease;
 }
-.session-item:hover .session-del {
+.session-item:hover .session-del,
+.session-item:focus-within .session-del {
   opacity: 1;
 }
 .session-del:hover {
   background: rgba(0, 0, 0, 0.06);
+}
+.session-del:focus-visible {
+  opacity: 1;
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+/* 触屏设备无 hover 态，删除按钮常驻可见（U9） */
+@media (hover: none) {
+  .session-del { opacity: 1; }
+}
+
+.session-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 .sidebar-nav {
@@ -262,12 +291,22 @@ async function handleNewChat() {
   gap: 4px;
 }
 .nav-entry {
+  display: block;
+  width: 100%;
   padding: 10px 12px;
+  border: none;
+  background: transparent;
   border-radius: 10px;
   cursor: pointer;
+  font-family: inherit;
   font-size: 13px;
+  text-align: left;
   color: var(--text-secondary);
-  transition: background 0.2s ease;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+.nav-entry:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 .nav-entry:hover {
   background: var(--accent-light);

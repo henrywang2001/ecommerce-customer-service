@@ -81,16 +81,72 @@ INTENT_CONFIGS: Dict[str, Dict[str, Any]] = {
 }
 
 
+# LLM 可能返回的近义/口语化意图码 → 标准意图码（B8 修复：避免未知码被静默降级为 fallback）
+_INTENT_SYNONYMS: Dict[str, str] = {
+    "物流查询": "shipping_info", "物流": "shipping_info", "查物流": "shipping_info",
+    "快递查询": "shipping_info", "配送查询": "shipping_info", "配送": "shipping_info",
+    "取消订单": "refund_request", "退单": "refund_request", "退货退款": "refund_request",
+    "查订单": "order_query", "订单查询": "order_query", "我的订单": "order_query",
+    "商品咨询": "product_inquiry", "商品查询": "product_inquiry",
+    "产品咨询": "product_inquiry", "产品查询": "product_inquiry",
+    "投诉建议": "complaint", "举报": "complaint", "差评": "complaint",
+    "人工客服": "human_agent", "找人工": "human_agent", "转人工": "human_agent", "真人": "human_agent",
+    "支付问题": "payment_issue", "付款问题": "payment_issue", "扣款": "payment_issue",
+    "促销活动": "promotion", "优惠活动": "promotion", "打折": "promotion",
+    "打招呼": "greeting", "问候": "greeting", "你好": "greeting",
+}
+
+
 class IntentService:
     """意图识别服务"""
 
     def __init__(self):
         pass
 
-    async def recognize(self, text: str, user_id: Optional[int] = None) -> IntentResult:
-        """识别用户意图 — 多策略融合"""
-        logger.info(f"意图识别: {text[:50]}...")
+    async def recognize(self, text: str, user_id: Optional[int] = None, preferred_intent: Optional[str] = None) -> IntentResult:
+        """识别用户意图 — 多策略融合
 
+        F12 修复：若调用方已预识别意图（如 Agent 路由携带 intent_code）且意图码合法，
+        直接采用预识别结果（高置信），跳过 LLM，既省一次调用也保证前后链路意图一致；
+        否则走原有的「关键词 + LLM」多策略融合。
+
+        B13 修复（更完善）：text 可能为 None（调用方未传 / 异常负载 / 上游解析失败）。
+        原报告仅建议在日志切片处加 `or ""`，但运行时实测真正崩溃点在
+        `_keyword_match` 内部的 `text.lower()`（text 为 None 时抛 AttributeError）。
+        故在此统一将 text 归一为字符串；None/空串直接短路返回 fallback 意图，
+        既杜绝崩溃，也避免对空文本发起无意义的 LLM 调用。
+        """
+        # B13：归一化为字符串，杜绝下游 text.lower() 在 None 上抛 AttributeError
+        safe_text = text if isinstance(text, str) else ""
+        logger.info(f"意图识别: {safe_text[:50]}...")  # 日志切片安全（双保险）
+
+        # F12：预识别意图优先（仅当意图码在已知配置内，不依赖 text）
+        if preferred_intent and preferred_intent in INTENT_CONFIGS:
+            config = INTENT_CONFIGS[preferred_intent]
+            return IntentResult(
+                intent_code=preferred_intent,
+                intent_name=config.get("name", preferred_intent),
+                confidence=0.95,
+                entities=[],
+                handler_type=config["handler"],
+                priority=config["priority"],
+            )
+
+        # B13：空文本（None 已归一为 "" 或用户传入空白串）直接兜底，
+        # 避免对空文本调用 LLM 造成浪费与潜在异常。
+        if not safe_text.strip():
+            cfg = INTENT_CONFIGS["fallback"]
+            logger.info("输入文本为空，直接返回 fallback 意图")
+            return IntentResult(
+                intent_code="fallback",
+                intent_name=cfg["name"],
+                confidence=0.0,
+                entities=[],
+                handler_type=cfg["handler"],
+                priority=cfg["priority"],
+            )
+
+        text = safe_text
         # 1. 关键词匹配
         keyword_result = self._keyword_match(text)
 
@@ -145,6 +201,43 @@ class IntentService:
         # 可以用 embedding 做语义相似度匹配
         return None
 
+    def _normalize_intent_code(self, code: str, text: str) -> Optional[str]:
+        """B8 修复：将 LLM 返回的（可能不在配置表中的）意图码归一为已知标准码。
+
+        原实现用 ``INTENT_CONFIGS.get(code, fallback)``，未知码整体当作 fallback
+        （handler_type="llm"、priority=0），在 _fuse_intents 中几乎必输给关键词匹配，
+        导致「LLM 已识别的意图」被丢弃，用户问题被错误走通用 LLM。
+
+        归一策略：
+        1) 已是标准码 → 直接采用；
+        2) 命中同义词表（近义/口语化表述）→ 映射到标准码；
+        3) 模糊包含标准码或意图名 → 映射；
+        4) 仍未知 → 回退到关键词匹配结果（保留意图信号），
+           若关键词也无结果则交给上层 fallback，而非强制 LLM fallback。
+        """
+        if not code:
+            return None
+        if code in INTENT_CONFIGS:
+            return code
+        # 2) 同义词/近义码映射（精确 / 互相包含）
+        for key, val in _INTENT_SYNONYMS.items():
+            if key == code or key in code or code in key:
+                return val
+        # 3) 模糊：是否包含已知意图码或意图名
+        cl = code.lower()
+        for known in INTENT_CONFIGS:
+            if known in cl or cl in known:
+                return known
+        for known, cfg in INTENT_CONFIGS.items():
+            name = cfg.get("name", "")
+            if name and name in code:
+                return known
+        # 4) 仍未知 → 退回关键词匹配，避免使用错误意图
+        kw = self._keyword_match(text)
+        if kw is not None:
+            return kw.intent_code
+        return None
+
     async def _llm_understand(self, text: str) -> Optional[IntentResult]:
         """LLM 深度意图理解 — Langfuse generation 追踪"""
         prompt = f"""分析以下用户消息的意图，从下列意图中选一个最匹配的：
@@ -163,10 +256,14 @@ shipping_info(配送查询), promotion(促销活动), greeting(问候), fallback
             input=text,
             model_parameters={"temperature": 0.1, "task": "intent_classification"},
         ) as gen:
-            result = await llm_service.generate_json(prompt)
+            result = await llm_service.generate_json(prompt, max_tokens=256)
             if result:
-                code = result.get("intent_code", "fallback")
-                config = INTENT_CONFIGS.get(code, INTENT_CONFIGS["fallback"])
+                raw_code = result.get("intent_code", "fallback")
+                code = self._normalize_intent_code(raw_code, text)
+                if code is None:
+                    # 未知码且无法归一 → 不强制 LLM fallback，交给上层（关键词/默认）处理
+                    return None
+                config = INTENT_CONFIGS[code]
                 intent = IntentResult(
                     intent_code=code,
                     intent_name=config.get("name", code),
@@ -178,6 +275,7 @@ shipping_info(配送查询), promotion(促销活动), greeting(问候), fallback
                 if gen is not None:
                     gen.update(output={
                         "intent_code": code,
+                        "raw_intent_code": raw_code,
                         "confidence": intent.confidence,
                         "reason": result.get("reason", ""),
                     })
