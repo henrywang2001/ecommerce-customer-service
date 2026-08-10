@@ -38,3 +38,54 @@ export const chatApi = {
     return request.delete(`/api/v1/chat/sessions/${sessionId}`)
   },
 }
+
+/**
+ * 流式发送消息（P6）：用 fetch + ReadableStream 解析 SSE，逐 token 回调。
+ * 不使用 axios（拦截器对流式响应不友好），手动携带 Authorization。
+ */
+export async function streamSend(
+  data: SendMessageRequest,
+  handlers: {
+    onToken: (content: string) => void
+    onDone: (payload: any) => void
+    onError: (message: string) => void
+  },
+): Promise<void> {
+  const token = localStorage.getItem('token')
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (token) headers['Authorization'] = `Bearer ${token}`
+  const baseURL = (import.meta.env.VITE_API_BASE_URL as string) || ''
+  const resp = await fetch(`${baseURL}/api/v1/chat/send_stream`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(data),
+  })
+  if (!resp.ok || !resp.body) {
+    handlers.onError(`请求失败 (${resp.status})`)
+    return
+  }
+  const reader = resp.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  while (true) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    let idx: number
+    while ((idx = buffer.indexOf('\n\n')) !== -1) {
+      const block = buffer.slice(0, idx)
+      buffer = buffer.slice(idx + 2)
+      const dataLine = block.split('\n').find((l) => l.startsWith('data:'))
+      if (!dataLine) continue
+      const jsonStr = dataLine.slice(5).trim()
+      try {
+        const evt = JSON.parse(jsonStr)
+        if (evt.type === 'token') handlers.onToken(evt.content)
+        else if (evt.type === 'done') handlers.onDone(evt)
+        else if (evt.type === 'error') handlers.onError(evt.message)
+      } catch {
+        /* 忽略不完整/非法块 */
+      }
+    }
+  }
+}

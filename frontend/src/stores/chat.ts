@@ -1,7 +1,8 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import { chatApi } from '@/api/chat'
+import { chatApi, streamSend } from '@/api/chat'
 import request from '@/utils/request'
+import { useAuthStore } from '@/stores/auth'
 import type { Message, SentimentType, SessionInfo } from '@/types/chat'
 
 // ===== 本地持久化常量（B1） =====
@@ -66,7 +67,9 @@ export const useChatStore = defineStore('chat', () => {
     // F1 幂等守卫：已有激活会话则直接返回，避免重复欢迎语/重复建会话
     if (activeSessionId.value) return
     try {
-      const result: any = await chatApi.createSession()
+      // F1：携带已登录用户身份，使后端可按用户隔离会话/强制 requires_auth
+      const authStore = useAuthStore()
+      const result: any = await chatApi.createSession({ user_id: authStore.user?.id })
       const sid = result.session.session_id
       sessionId.value = sid
       activeSessionId.value = sid
@@ -115,9 +118,11 @@ export const useChatStore = defineStore('chat', () => {
     isTyping.value = true
 
     try {
+      const authStore = useAuthStore()
       const result = await chatApi.sendMessage({
         session_id: sid,
         content,
+        user_id: authStore.user?.id,
       })
 
       const botMsg: Message = {
@@ -158,6 +163,91 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  async function sendMessageStream(content: string) {
+    const sid = sessionId.value
+    if (!sid) return
+
+    const buf =
+      messagesBySession.value[sid] ||
+      (messagesBySession.value[sid] = sid === sessionId.value ? messages.value : [])
+
+    const userMsg: Message = {
+      id: Date.now().toString(),
+      sessionId: sid,
+      senderType: 'user',
+      content,
+      createdAt: new Date().toISOString(),
+      isUser: true,
+    }
+    buf.push(userMsg)
+    if (sid === sessionId.value && messages.value !== buf) messages.value = buf
+    // B1 健壮性：用户消息落盘立即持久化，避免机器人回复前刷新导致输入丢失
+    persistToLocal()
+    isTyping.value = true
+
+    const botId = (Date.now() + 1).toString()
+    const botMsg: Message = {
+      id: botId,
+      sessionId: sid,
+      senderType: 'bot',
+      content: '',
+      createdAt: new Date().toISOString(),
+      isUser: false,
+    }
+    buf.push(botMsg)
+    if (sid === sessionId.value && messages.value !== buf) messages.value = buf
+
+    let gotToken = false
+
+    const fallbackToNonStreaming = () => {
+      const ui = buf.indexOf(userMsg)
+      if (ui !== -1) buf.splice(ui, 1)
+      const bi = buf.indexOf(botMsg)
+      if (bi !== -1) buf.splice(bi, 1)
+      if (sid === sessionId.value && messages.value !== buf) messages.value = buf
+      void sendMessage(content)
+    }
+
+    try {
+      const authStore = useAuthStore()
+      await streamSend(
+        { session_id: sid, content, user_id: authStore.user?.id },
+        {
+          onToken: (t: string) => {
+            gotToken = true
+            botMsg.content += t
+            if (sid === sessionId.value && messages.value !== buf) messages.value = buf
+          },
+          onDone: (payload: any) => {
+            botMsg.content = payload.response
+            botMsg.intent = payload.intent
+            botMsg.sentiment = payload.sentiment
+            botMsg.sentiment_score = payload.sentiment_score
+            if (sid === sessionId.value) {
+              currentSentiment.value = payload.sentiment
+              sentimentScore.value = payload.sentiment_score
+              quickReplies.value = payload.quick_replies || []
+            }
+            persistToLocal()
+          },
+          onError: (msg: string) => {
+            if (!gotToken) {
+              fallbackToNonStreaming()
+            } else {
+              botMsg.content += `\n\n⚠️ ${msg}`
+              persistToLocal()
+            }
+          },
+        },
+      )
+    } catch (error) {
+      console.error('流式发送失败:', error)
+      if (!gotToken) fallbackToNonStreaming()
+    } finally {
+      if (sid === sessionId.value) isTyping.value = false
+    }
+  }
+
   async function loadHistory() {
     if (!sessionId.value) return
     try {
@@ -184,7 +274,8 @@ export const useChatStore = defineStore('chat', () => {
   async function startNewSession() {
     isTyping.value = false
     try {
-      const result: any = await chatApi.createSession()
+      const authStore = useAuthStore()
+      const result: any = await chatApi.createSession({ user_id: authStore.user?.id })
       const sid = result.session.session_id
       const mapped = mapSession(result.session)
       if (!sessions.value.find((s) => s.sessionId === sid)) {
@@ -350,6 +441,7 @@ export const useChatStore = defineStore('chat', () => {
     lastMessage,
     initSession,
     sendMessage,
+    sendMessageStream,
     loadHistory,
     loadSessions,
     startNewSession,

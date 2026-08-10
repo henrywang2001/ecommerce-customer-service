@@ -5,6 +5,11 @@ import json
 import logging
 from app.core.config import settings
 from app.services.observe_service import observe
+from app.utils.http_client import get_http_client
+from app.utils.outbound import (
+    post_with_resilience, stream_post,
+    llm_semaphore, llm_breaker,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,29 +56,33 @@ class LLMService:
             },
         ) as gen:
             try:
-                async with httpx.AsyncClient(timeout=120.0) as client:
-                    response = await client.post(
-                        f"{self.api_base}/chat/completions",
-                        headers=headers,
-                        json=payload,
-                    )
-                    response.raise_for_status()
-                    data = response.json()
-                    result = data["choices"][0]["message"]["content"]
+                client = get_http_client()
+                response = await post_with_resilience(
+                    client,
+                    f"{self.api_base}/chat/completions",
+                    semaphore=llm_semaphore,
+                    breaker=llm_breaker,
+                    headers=headers,
+                    json=payload,
+                    timeout=120.0,
+                )
+                response.raise_for_status()
+                data = response.json()
+                result = data["choices"][0]["message"]["content"]
 
-                    # 尝试记录 token 用量（DeepSeek 可能不返回）
-                    usage = data.get("usage", {})
-                    usage_details = {}
-                    if usage:
-                        usage_details = {
-                            "prompt_tokens": usage.get("prompt_tokens", 0),
-                            "completion_tokens": usage.get("completion_tokens", 0),
-                            "total_tokens": usage.get("total_tokens", 0),
-                        }
+                # 尝试记录 token 用量（DeepSeek 可能不返回）
+                usage = data.get("usage", {})
+                usage_details = {}
+                if usage:
+                    usage_details = {
+                        "prompt_tokens": usage.get("prompt_tokens", 0),
+                        "completion_tokens": usage.get("completion_tokens", 0),
+                        "total_tokens": usage.get("total_tokens", 0),
+                    }
 
-                    if gen is not None:
-                        gen.update(output=result, usage_details=usage_details)
-                    return result
+                if gen is not None:
+                    gen.update(output=result, usage_details=usage_details)
+                return result
             except Exception as e:
                 logger.error(f"LLM 生成失败: {e}")
                 if gen is not None:
@@ -114,28 +123,32 @@ class LLMService:
             },
         ) as gen:
             try:
-                async with httpx.AsyncClient(timeout=120.0) as client:
-                    response = await client.post(
-                        f"{self.api_base}/chat/completions",
-                        headers=headers,
-                        json=payload,
-                    )
-                    response.raise_for_status()
-                    data = response.json()
-                    result = data["choices"][0]["message"]["content"]
+                client = get_http_client()
+                response = await post_with_resilience(
+                    client,
+                    f"{self.api_base}/chat/completions",
+                    semaphore=llm_semaphore,
+                    breaker=llm_breaker,
+                    headers=headers,
+                    json=payload,
+                    timeout=120.0,
+                )
+                response.raise_for_status()
+                data = response.json()
+                result = data["choices"][0]["message"]["content"]
 
-                    usage = data.get("usage", {})
-                    usage_details = {}
-                    if usage:
-                        usage_details = {
-                            "prompt_tokens": usage.get("prompt_tokens", 0),
-                            "completion_tokens": usage.get("completion_tokens", 0),
-                            "total_tokens": usage.get("total_tokens", 0),
-                        }
+                usage = data.get("usage", {})
+                usage_details = {}
+                if usage:
+                    usage_details = {
+                        "prompt_tokens": usage.get("prompt_tokens", 0),
+                        "completion_tokens": usage.get("completion_tokens", 0),
+                        "total_tokens": usage.get("total_tokens", 0),
+                    }
 
-                    if gen is not None:
-                        gen.update(output=result, usage_details=usage_details)
-                    return result
+                if gen is not None:
+                    gen.update(output=result, usage_details=usage_details)
+                return result
             except Exception as e:
                 logger.error(f"LLM 对话失败: {e}")
                 if gen is not None:
@@ -167,6 +180,54 @@ class LLMService:
         except (json.JSONDecodeError, ValueError) as e:
             logger.error(f"JSON 解析失败: {e}, 原始输出: {response[:200]}")
             return None
+
+    async def _stream_post(self, messages: List[Dict[str, str]], temperature: Optional[float] = None):
+        """内部：以 stream=True 调用 LLM，逐 token 产出（P6）。"""
+        temp = temperature or self.temperature
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": temp,
+            "max_tokens": self.max_tokens,
+            "stream": True,
+        }
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        client = get_http_client()
+        async for line in stream_post(
+            client,
+            f"{self.api_base}/chat/completions",
+            semaphore=llm_semaphore,
+            breaker=llm_breaker,
+            headers=headers,
+            json=payload,
+            timeout=120.0,
+        ):
+            if not line or not line.startswith("data:"):
+                continue
+            data = line[len("data:"):].strip()
+            if data == "[DONE]":
+                break
+            try:
+                obj = json.loads(data)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            delta = obj.get("choices", [{}])[0].get("delta", {})
+            piece = delta.get("content")
+            if piece:
+                yield piece
+
+    async def chat_stream(self, messages: List[Dict[str, str]], temperature: Optional[float] = None):
+        """多轮对话流式输出（P6）。"""
+        async for piece in self._stream_post(messages, temperature):
+            yield piece
+
+    async def generate_stream(self, prompt: str, temperature: Optional[float] = None):
+        """单轮生成流式输出（P6）。"""
+        async for piece in self._stream_post([{"role": "user", "content": prompt}], temperature):
+            yield piece
 
 
 # 全局单例

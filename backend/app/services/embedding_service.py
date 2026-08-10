@@ -4,6 +4,8 @@ import httpx
 import logging
 from app.core.config import settings
 from app.services.observe_service import observe
+from app.utils.http_client import get_http_client
+from app.utils.outbound import post_with_resilience, embedding_semaphore, embedding_breaker
 
 logger = logging.getLogger(__name__)
 
@@ -35,30 +37,34 @@ class EmbeddingService:
             input={"texts": texts, "count": len(texts)},
         ) as emb:
             try:
-                async with httpx.AsyncClient(timeout=60.0) as client:
-                    response = await client.post(
-                        f"{self.api_base}/embeddings",
-                        headers=headers,
-                        json=payload,
-                    )
-                    response.raise_for_status()
-                    data = response.json()
-                    # 按 index 排序返回
-                    embeddings = sorted(data["data"], key=lambda x: x["index"])
-                    result = [item["embedding"] for item in embeddings]
+                client = get_http_client()
+                response = await post_with_resilience(
+                    client,
+                    f"{self.api_base}/embeddings",
+                    semaphore=embedding_semaphore,
+                    breaker=embedding_breaker,
+                    headers=headers,
+                    json=payload,
+                    timeout=60.0,
+                )
+                response.raise_for_status()
+                data = response.json()
+                # 按 index 排序返回
+                embeddings = sorted(data["data"], key=lambda x: x["index"])
+                result = [item["embedding"] for item in embeddings]
 
-                    if emb is not None:
-                        usage = data.get("usage", {})
-                        emb.update(
-                            output={
-                                "count": len(result),
-                                "dimension": len(result[0]) if result else 0,
-                            },
-                            usage_details={
-                                "total_tokens": usage.get("total_tokens", 0),
-                            },
-                        )
-                    return result
+                if emb is not None:
+                    usage = data.get("usage", {})
+                    emb.update(
+                        output={
+                            "count": len(result),
+                            "dimension": len(result[0]) if result else 0,
+                        },
+                        usage_details={
+                            "total_tokens": usage.get("total_tokens", 0),
+                        },
+                    )
+                return result
             except Exception as e:
                 logger.error(f"Embedding 生成失败: {e}")
                 if emb is not None:

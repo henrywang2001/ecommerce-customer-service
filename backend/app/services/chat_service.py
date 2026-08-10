@@ -1,7 +1,18 @@
-"""对话服务 - 整合意图识别、情感分析、RAG、Agent（集成 Langfuse 追踪）"""
+"""对话服务 - 整合意图识别、情感分析、RAG、Agent（集成 Langfuse 追踪）
+
+会话内存态治理（B1/B7/B14）：
+- 三张内存表（_sessions / _conversations / _agents）统一收拢到 SessionManager，
+  所有写操作经 asyncio.Lock 串行化，消除并发数据竞争（B7）。
+- send_message 采用「准备(加锁 ensure + 防 purge 当前会话) → 长耗时 LLM → 提交(加锁落库)」
+  三段式：准备阶段即保证三表一致并把当前会话 last_message_at 刷新为 now，
+  使当前会话在 LLM 处理期间不会被 _purge_expired 误删（B1），
+  同时 send_message 路径新建的会话也会写入 _sessions 元数据（B14）。
+"""
 from typing import Dict, Any, Optional, List
 import uuid
 import datetime
+import asyncio
+import json
 import logging
 from app.services.intent_service import intent_service
 from app.services.sentiment_service import sentiment_service, SentimentType
@@ -12,18 +23,158 @@ from app.agents.customer_agent import CustomerServiceAgent
 
 logger = logging.getLogger(__name__)
 
-# 内存中的会话存储（生产环境应使用 Redis）
-_sessions: Dict[str, Dict[str, Any]] = {}
-_conversations: Dict[str, List[Dict[str, Any]]] = {}
-_agents: Dict[str, CustomerServiceAgent] = {}
-
 # 会话生命周期治理（M1）：容量上限 + 空闲 TTL 惰性淘汰
 MAX_SESSIONS: int = 200
 SESSION_TTL_SECONDS: int = 86400  # 24 小时
 
 
+class SessionManager:
+    """会话状态管理器：统一持有三张内存表，并以锁保护所有写操作。
+
+    说明：会话/Agent 实例为进程内对象（Agent 不可序列化），横向扩展时
+    本管理器负责单进程内的正确性与并发安全；跨进程共享由缓存/限流器
+    的 Redis 后端承接（见 utils/cache.py、utils/rate_limiter.py，对应 P3/P8）。
+    """
+
+    def __init__(self):
+        self._sessions: Dict[str, Dict[str, Any]] = {}
+        self._conversations: Dict[str, List[Dict[str, Any]]] = {}
+        self._agents: Dict[str, CustomerServiceAgent] = {}
+        self._lock = asyncio.Lock()
+
+    # ── 内部工具 ──
+    @staticmethod
+    def _now() -> datetime.datetime:
+        return datetime.datetime.now(datetime.timezone.utc)
+
+    def _remove(self, sid: str) -> None:
+        """同步清理三表，避免内存状态不一致"""
+        self._sessions.pop(sid, None)
+        self._conversations.pop(sid, None)
+        self._agents.pop(sid, None)
+
+    def _ensure(self, sid: str, user_id: Optional[int], touch: bool = True) -> CustomerServiceAgent:
+        """确保三表存在且一致（幂等）；返回 Agent 实例。
+
+        touch=True 时刷新 last_message_at 为 now，使当前会话在 LLM 处理期间
+        不会被 _purge_expired 判定为过期而误删（B1）。
+        """
+        if sid not in self._sessions:
+            self._sessions[sid] = {
+                "session_id": sid,
+                "user_id": user_id,
+                "status": "active",
+                "started_at": self._now(),
+                "last_message_at": self._now(),
+                "message_count": 0,
+                "bot_name": "智能客服小e",
+            }
+        if sid not in self._conversations:
+            self._conversations[sid] = []
+        if sid not in self._agents:
+            self._agents[sid] = CustomerServiceAgent(sid, user_id)
+        elif user_id is not None:
+            # 后续消息若携带已登录身份，同步到 Agent，保证 requires_auth 校验一致 (F1)
+            self._agents[sid].user_id = user_id
+        if touch:
+            self._sessions[sid]["last_message_at"] = self._now()
+        return self._agents[sid]
+
+    def _purge_expired(self, exclude: Optional[str] = None) -> None:
+        """惰性淘汰：删除空闲超过 TTL 的会话。
+
+        exclude 指定的会话（通常是「正在处理的当前会话」）不会被淘汰，
+        从根上消除 B1 的 KeyError 崩溃。
+        """
+        now = self._now()
+        expired = [
+            s for s, info in self._sessions.items()
+            if s != exclude and (
+                now - (info.get("last_message_at") or info.get("started_at") or now)
+            ).total_seconds() > SESSION_TTL_SECONDS
+        ]
+        for s in expired:
+            self._remove(s)
+            logger.info(f"会话因空闲超时已淘汰: {s}")
+
+    def _evict_lru(self) -> None:
+        """容量上限：超过 MAX_SESSIONS 时按最旧活动淘汰"""
+        sentinel = datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
+        while len(self._sessions) > MAX_SESSIONS:
+            oldest_sid, oldest_info = min(
+                self._sessions.items(),
+                key=lambda kv: kv[1].get("last_message_at") or kv[1].get("started_at") or sentinel,
+            )
+            self._remove(oldest_sid)
+            logger.info(f"会话因超过容量上限已淘汰(LRU): {oldest_sid}")
+
+    # ── 对外（加锁）接口 ──
+    async def prepare(self, session_id: str, user_id: Optional[int]) -> CustomerServiceAgent:
+        """发送前准备：确保三表一致 + 刷新活跃时间 + 惰性淘汰（排除当前会话）。"""
+        async with self._lock:
+            agent = self._ensure(session_id, user_id, touch=True)
+            self._purge_expired(exclude=session_id)
+            self._evict_lru()
+            return agent
+
+    async def commit(self, session_id: str, user_msg: Dict[str, Any], assistant_msg: Dict[str, Any]) -> None:
+        """发送后提交：落库对话历史 + 更新会话统计（加锁，防并发写竞争）。"""
+        async with self._lock:
+            self._conversations.setdefault(session_id, []).append(user_msg)
+            self._conversations.setdefault(session_id, []).append(assistant_msg)
+            if session_id in self._sessions:
+                self._sessions[session_id]["message_count"] = (
+                    self._sessions[session_id].get("message_count", 0) + 1
+                )
+                self._sessions[session_id]["last_message_at"] = self._now()
+
+    def get_agent(self, session_id: str) -> Optional[CustomerServiceAgent]:
+        return self._agents.get(session_id)
+
+    def get_conversation(self, session_id: str) -> List[Dict[str, Any]]:
+        return self._conversations.get(session_id, [])
+
+    async def delete(self, session_id: str) -> bool:
+        """删除会话：返回是否真实存在（修复 delete 恒返回 True 的隐患）。"""
+        async with self._lock:
+            existed = session_id in self._sessions or session_id in self._conversations
+            self._remove(session_id)
+            return existed
+
+    async def list_all(self, user_id: Optional[int] = None) -> Dict[str, Any]:
+        async with self._lock:
+            sessions = []
+            for sid, info in self._sessions.items():
+                # F4: 指定 user_id 时仅返回该用户的会话，实现用户隔离
+                if user_id is not None and info.get("user_id") != user_id:
+                    continue
+                sessions.append({
+                    "session_id": info.get("session_id", sid),
+                    "user_id": info.get("user_id"),
+                    "status": info.get("status", "active"),
+                    "started_at": info.get("started_at"),
+                    "message_count": info.get("message_count", 0),
+                    "last_message_at": info.get("last_message_at"),
+                    "bot_name": info.get("bot_name", "智能客服小e"),
+                })
+            return {"sessions": sessions, "total": len(sessions)}
+
+    async def mark_transferred(self, session_id: str) -> None:
+        async with self._lock:
+            if session_id in self._sessions:
+                self._sessions[session_id]["status"] = "transferred"
+
+    async def mark_satisfaction(self, session_id: str, score: int) -> None:
+        async with self._lock:
+            if session_id in self._sessions:
+                self._sessions[session_id]["satisfaction_score"] = score
+
+
 class ChatService:
     """对话服务"""
+
+    def __init__(self):
+        self.sm = SessionManager()
 
     async def create_session(
         self,
@@ -32,26 +183,13 @@ class ChatService:
         initial_message: Optional[str] = None,
     ) -> Dict[str, Any]:
         """创建新会话"""
-        self._purge_expired()
+        # 临界区：淘汰过期 + 新建会话元数据 + 容量淘汰
+        async with self.sm._lock:
+            self.sm._purge_expired()
+            session_id = f"sess_{uuid.uuid4().hex[:12]}"
+            self.sm._ensure(session_id, user_id, touch=True)
+            self.sm._evict_lru()
 
-        session_id = f"sess_{uuid.uuid4().hex[:12]}"
-        session_info = {
-            "session_id": session_id,
-            "user_id": user_id,
-            "status": "active",
-            "started_at": datetime.datetime.now(datetime.timezone.utc),
-            "last_message_at": datetime.datetime.now(datetime.timezone.utc),
-            "message_count": 0,
-            "bot_name": "智能客服小e",
-        }
-        _sessions[session_id] = session_info
-        _conversations[session_id] = []
-
-        # 创建 Agent 实例
-        agent = CustomerServiceAgent(session_id, user_id)
-        _agents[session_id] = agent
-
-        self._evict_lru()
         logger.info(f"会话已创建: {session_id}")
 
         # 欢迎消息
@@ -61,14 +199,14 @@ class ChatService:
         if initial_message:
             result = await self.send_message(session_id, initial_message, user_id)
             return {
-                "session": session_info,
+                "session": self.sm._sessions.get(session_id),
                 "welcome_message": welcome,
                 "quick_replies": quick_replies,
                 "initial_response": result,
             }
 
         return {
-            "session": session_info,
+            "session": self.sm._sessions.get(session_id),
             "welcome_message": welcome,
             "quick_replies": quick_replies,
         }
@@ -81,18 +219,11 @@ class ChatService:
         content_type: str = "text",
     ) -> Dict[str, Any]:
         """处理用户消息并返回回复 — 全链路 Langfuse 追踪"""
-        logger.info(f"处理消息: session={session_id}, content={content[:50]}...")
+        logger.info(f"处理消息: session={session_id}, content={(content or '')[:50]}...")
 
-        # 确保会话存在
-        if session_id not in _conversations:
-            _conversations[session_id] = []
-        if session_id not in _agents:
-            _agents[session_id] = CustomerServiceAgent(session_id, user_id)
-
-        agent = _agents[session_id]
-
-        # 惰性淘汰过期会话（M1）
-        self._purge_expired()
+        # 1) 进入临界区：确保会话存在（含 _sessions 元数据，修复 B14）、
+        #    刷新活跃时间并排除当前会话做惰性淘汰（修复 B1），随后释放锁。
+        await self.sm.prepare(session_id, user_id)
 
         # ── Langfuse: 创建根 Trace ──
         with observe.span(
@@ -105,11 +236,11 @@ class ChatService:
             },
             metadata={
                 "channel": "web",
-                "session_message_count": len(_conversations.get(session_id, [])),
+                "session_message_count": len(self.sm.get_conversation(session_id)),
             },
         ) as root_span:
 
-            # 1. 意图识别
+            # 2. 意图识别
             with observe.span(
                 name="intent-recognition",
                 input={"text": content},
@@ -125,7 +256,7 @@ class ChatService:
                         }
                     )
 
-            # 2. 情感分析
+            # 3. 情感分析
             with observe.span(
                 name="sentiment-analysis",
                 input={"text": content},
@@ -139,7 +270,7 @@ class ChatService:
                         }
                     )
 
-            # 3. 根据意图类型处理
+            # 4. 根据意图类型处理
             response_text = ""
             quick_replies: List[str] = []
             need_transfer = False
@@ -167,7 +298,11 @@ class ChatService:
 
             elif intent_result.handler_type == "rag":
                 # 知识检索：优先走 SearchKnowledgeTool（已接线），失败回退 LLM 生成
-                tool_res = await agent.execute_tool("search_knowledge", {"user_message": content, "top_k": 3})
+                agent = self.sm.get_agent(session_id)
+                if agent is not None:
+                    tool_res = await agent.execute_tool("search_knowledge", {"user_message": content, "top_k": 3})
+                else:
+                    tool_res = {"success": False}
                 if tool_res.get("success") and tool_res.get("results"):
                     response_text = tool_res.get("response", "")
                 else:
@@ -182,7 +317,7 @@ class ChatService:
                     if llm_span is not None:
                         llm_span.update(output=response_text[:200])
 
-            # 4. 添加情感响应前缀
+            # 5. 添加情感响应前缀
             strategy = sentiment_service.get_response_strategy(sent_type, sent_score)
             if sent_type == SentimentType.NEGATIVE and strategy["prefix"]:
                 response_text = strategy["emoji"] + " " + strategy["prefix"] + response_text
@@ -201,28 +336,27 @@ class ChatService:
             sentiment_value = sent_type.value
             sentiment_score_value = round(sent_score, 2)
 
-            # 5. 存储对话历史（B2/B5：落库 intent/sentiment/sentiment_score）
-            _conversations[session_id].append({
+            # 6. 存储对话历史（B2/B5：落库 intent/sentiment/sentiment_score）
+            now_iso = self.sm._now().isoformat()
+            user_msg = {
                 "role": "user",
                 "content": content,
-                "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "created_at": now_iso,
                 "intent": None,
                 "sentiment": None,
                 "sentiment_score": None,
-            })
-            _conversations[session_id].append({
+            }
+            assistant_msg = {
                 "role": "assistant",
                 "content": response_text,
-                "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "created_at": now_iso,
                 "intent": intent_payload,
                 "sentiment": sentiment_value,
                 "sentiment_score": sentiment_score_value,
-            })
+            }
 
-            # 更新会话信息
-            if session_id in _sessions:
-                _sessions[session_id]["message_count"] += 1
-                _sessions[session_id]["last_message_at"] = datetime.datetime.now(datetime.timezone.utc)
+            # 7) 提交阶段：加锁落库 + 更新统计（修复 B7 并发写竞争；B1 防 KeyError）
+            await self.sm.commit(session_id, user_msg, assistant_msg)
 
             result = {
                 "response": response_text,
@@ -245,9 +379,126 @@ class ChatService:
 
             return result
 
+    async def stream_message(
+        self,
+        session_id: str,
+        content: str,
+        user_id: Optional[int] = None,
+        content_type: str = "text",
+    ):
+        """流式处理用户消息，逐 token 产出 SSE 片段（P6）。
+
+        与 send_message 保持相同的意图识别/情感分析/处理分支/落库语义，
+        区别仅在于：LLM 与 RAG 分支边生成边推送 token，tool/transfer 分支
+        一次性推送整段；结束时再推送一条 done 事件（含意图/情感/快捷回复等元数据）。
+        """
+        await self.sm.prepare(session_id, user_id)
+
+        def _sse(event_type: str, **payload) -> str:
+            return f"data: {json.dumps({'type': event_type, **payload}, ensure_ascii=False)}\n\n"
+
+        with observe.span(name="chat-stream-message", input={"session_id": session_id, "content": content}) as root_span:
+            # 意图识别
+            intent_result = await intent_service.recognize(content, user_id)
+            # 情感分析
+            sent_type, sent_score = await sentiment_service.analyze(content)
+
+            response_text = ""
+            quick_replies: List[str] = []
+            need_transfer = False
+            handler = intent_result.handler_type
+
+            if handler == "transfer":
+                reason = "投诉" if intent_result.intent_code == "complaint" else "用户主动请求"
+                response_text = await self._handle_transfer(session_id, content, intent_result, user_id, reason)
+                need_transfer = True
+                quick_replies = ["继续等待", "留言", "电话联系"]
+                yield _sse("token", content=response_text)
+
+            elif handler == "tool":
+                response_text = await self._handle_with_tools(session_id, content, intent_result, user_id)
+                quick_replies = self._get_followup_quick_replies(intent_result.intent_code)
+                yield _sse("token", content=response_text)
+
+            elif handler == "rag":
+                agent = self.sm.get_agent(session_id)
+                if agent is not None:
+                    tool_res = await agent.execute_tool("search_knowledge", {"user_message": content, "top_k": 3})
+                else:
+                    tool_res = {"success": False}
+                if tool_res.get("success") and tool_res.get("results"):
+                    response_text = tool_res.get("response", "")
+                    yield _sse("token", content=response_text)
+                else:
+                    context = await rag_service.retrieve(content, top_k=3)
+                    async for piece in rag_service.generate_stream(content, context):
+                        response_text += piece
+                        yield _sse("token", content=piece)
+
+            else:
+                history = self.sm.get_conversation(session_id)
+                clean_history = [
+                    {"role": m["role"], "content": m["content"]}
+                    for m in history[-6:]
+                ]
+                messages = [
+                    {"role": "system", "content": self._get_system_prompt()},
+                    *clean_history,
+                    {"role": "user", "content": content},
+                ]
+                async for piece in llm_service.chat_stream(messages):
+                    response_text += piece
+                    yield _sse("token", content=piece)
+
+            # 情感响应前缀
+            strategy = sentiment_service.get_response_strategy(sent_type, sent_score)
+            if sent_type == SentimentType.NEGATIVE and strategy["prefix"]:
+                response_text = strategy["emoji"] + " " + strategy["prefix"] + response_text
+            elif sent_type == SentimentType.POSITIVE:
+                response_text = strategy["emoji"] + " " + response_text
+
+            # 构造意图/情感载荷（与 send_message 一致）
+            intent_payload = {
+                "intent_code": intent_result.intent_code,
+                "intent_name": intent_result.intent_name,
+                "confidence": intent_result.confidence,
+                "entities": [e.model_dump() for e in intent_result.entities],
+                "handler_type": intent_result.handler_type,
+                "priority": intent_result.priority,
+            }
+            sentiment_value = sent_type.value
+            sentiment_score_value = round(sent_score, 2)
+
+            # 落库（与 send_message 一致）
+            now_iso = self.sm._now().isoformat()
+            user_msg = {
+                "role": "user", "content": content, "created_at": now_iso,
+                "intent": None, "sentiment": None, "sentiment_score": None,
+            }
+            assistant_msg = {
+                "role": "assistant", "content": response_text, "created_at": now_iso,
+                "intent": intent_payload, "sentiment": sentiment_value,
+                "sentiment_score": sentiment_score_value,
+            }
+            await self.sm.commit(session_id, user_msg, assistant_msg)
+
+            if root_span is not None:
+                root_span.update(output={"response": response_text[:300], "intent_code": intent_result.intent_code})
+
+            # 结束事件：推送完整信息与元数据，供前端最终对齐
+            yield _sse(
+                "done",
+                response=response_text,
+                intent=intent_payload,
+                sentiment=sentiment_value,
+                sentiment_score=sentiment_score_value,
+                quick_replies=quick_replies,
+                need_transfer=need_transfer,
+            )
+
     async def _handle_transfer(self, session_id: str, content: str, intent_result, user_id: Optional[int], reason: str = "用户主动请求") -> str:
         """转人工：委派 TransferHumanTool（ReAct 工具接线）"""
-        agent = _agents.get(session_id)
+        agent = self.sm.get_agent(session_id)
         if agent is not None:
             result = await agent.execute_tool(
                 "transfer_human",
@@ -259,7 +510,7 @@ class ChatService:
     async def _handle_with_tools(self, session_id: str, content: str, intent_result, user_id: Optional[int]) -> str:
         """按意图码分发到对应 Agent 工具（ReAct 工具接线）"""
         code = intent_result.intent_code
-        agent = _agents.get(session_id)
+        agent = self.sm.get_agent(session_id)
         if agent is None:
             return "正在为您处理，请稍候…"
 
@@ -286,7 +537,7 @@ class ChatService:
 
     async def _handle_with_llm(self, session_id: str, content: str, intent_result) -> str:
         """使用 LLM 直接回答"""
-        history = _conversations.get(session_id, [])
+        history = self.sm.get_conversation(session_id)
         # 存储的每条消息现已含 intent/sentiment 等额外字段，
         # 发送给 LLM 时必须映射为纯 {role, content}，避免多余字段污染输入。
         clean_history = [
@@ -331,7 +582,7 @@ class ChatService:
 
     async def get_history(self, session_id: str, page: int = 1, page_size: int = 20) -> Dict[str, Any]:
         """获取对话历史"""
-        all_messages = _conversations.get(session_id, [])
+        all_messages = self.sm.get_conversation(session_id)
         total = len(all_messages)
         start = (page - 1) * page_size
         end = start + page_size
@@ -354,64 +605,17 @@ class ChatService:
 
         return {"items": result, "total": total, "page": page, "page_size": page_size}
 
-    async def list_sessions(self) -> Dict[str, Any]:
-        """获取会话列表"""
-        sessions = []
-        for sid, info in _sessions.items():
-            sessions.append({
-                "session_id": info.get("session_id", sid),
-                "user_id": info.get("user_id"),
-                "status": info.get("status", "active"),
-                "started_at": info.get("started_at"),
-                "message_count": info.get("message_count", 0),
-                "last_message_at": info.get("last_message_at"),
-                "bot_name": info.get("bot_name", "智能客服小e"),
-            })
-        return {"sessions": sessions, "total": len(sessions)}
-
-    # ── 会话生命周期治理（M1）──
-    def _remove_session(self, session_id: str) -> None:
-        """同步清理三表，避免内存状态不一致"""
-        _sessions.pop(session_id, None)
-        _conversations.pop(session_id, None)
-        _agents.pop(session_id, None)
-
-    def _purge_expired(self) -> None:
-        """惰性淘汰：删除空闲超过 TTL 的会话（在创建/发送时触发）"""
-        now = datetime.datetime.now(datetime.timezone.utc)
-        expired = [
-            sid for sid, info in _sessions.items()
-            if (now - (info.get("last_message_at") or info.get("started_at") or now)).total_seconds()
-            > SESSION_TTL_SECONDS
-        ]
-        for sid in expired:
-            self._remove_session(sid)
-            logger.info(f"会话因空闲超时已淘汰: {sid}")
-
-    def _evict_lru(self) -> None:
-        """容量上限：超过 MAX_SESSIONS 时按最旧活动淘汰"""
-        sentinel = datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
-        while len(_sessions) > MAX_SESSIONS:
-            oldest_sid, oldest_info = min(
-                _sessions.items(),
-                key=lambda kv: kv[1].get("last_message_at") or kv[1].get("started_at") or sentinel,
-            )
-            self._remove_session(oldest_sid)
-            logger.info(f"会话因超过容量上限已淘汰(LRU): {oldest_sid}")
+    async def list_sessions(self, user_id: Optional[int] = None) -> Dict[str, Any]:
+        """获取会话列表（F4：传入 user_id 时按用户隔离）"""
+        return await self.sm.list_all(user_id=user_id)
 
     async def delete_session(self, session_id: str) -> bool:
         """删除会话：清理内存中的会话元数据、对话历史与 Agent 实例"""
-        existed = session_id in _sessions or session_id in _conversations
-        _sessions.pop(session_id, None)
-        _conversations.pop(session_id, None)
-        _agents.pop(session_id, None)
-        logger.info(f"会话已删除: {session_id}")
-        return True
+        return await self.sm.delete(session_id)
 
     async def transfer_to_human(self, session_id: str, reason: str = "用户主动请求") -> Dict[str, Any]:
         """转人工"""
-        if session_id in _sessions:
-            _sessions[session_id]["status"] = "transferred"
+        await self.sm.mark_transferred(session_id)
         return {
             "success": True,
             "message": "已为您转接人工客服",
@@ -422,8 +626,7 @@ class ChatService:
 
     async def rate_session(self, session_id: str, score: int, comment: Optional[str] = None) -> Dict[str, Any]:
         """评价会话"""
-        if session_id in _sessions:
-            _sessions[session_id]["satisfaction_score"] = score
+        await self.sm.mark_satisfaction(session_id, score)
         logger.info(f"会话评价: session={session_id}, score={score}, comment={comment}")
         return {"success": True, "message": "感谢您的评价！"}
 

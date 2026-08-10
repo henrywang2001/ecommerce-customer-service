@@ -2,10 +2,13 @@
 from typing import List, Dict, Any, Optional
 import asyncio
 import logging
+import re
+import hashlib
 from app.services.embedding_service import embedding_service
 from app.services.llm_service import llm_service
 from app.services.observe_service import observe
 from app.rag.vector_store import vector_store
+from app.utils.cache import cache
 
 logger = logging.getLogger(__name__)
 
@@ -111,24 +114,18 @@ BUILT_IN_KNOWLEDGE: List[Dict[str, Any]] = [
 class RAGService:
     """检索增强生成服务 — ChromaDB + 千问 Embedding"""
 
-    def __init__(self):
-        self._chroma_client = None
-
     async def _get_chroma(self):
-        """懒加载 ChromaDB 客户端"""
-        if self._chroma_client is None:
-            try:
-                import chromadb
-                from app.core.config import settings
-                self._chroma_client = chromadb.PersistentClient(
-                    path=settings.CHROMA_PERSIST_DIR,
-                )
-                logger.info(f"ChromaDB 已连接: {settings.CHROMA_PERSIST_DIR}")
-            except ImportError:
-                logger.warning("chromadb 未安装，使用内置知识库作为 fallback")
-            except Exception as e:
-                logger.warning(f"ChromaDB 连接失败: {e}，使用内置知识库")
-        return self._chroma_client
+        """懒加载 ChromaDB 客户端（P7 修复：复用全局单例，避免同目录多客户端锁竞争）"""
+        from app.rag.chroma_client import get_chroma_client
+        return get_chroma_client()
+
+    def _make_vector_id(self, text: str) -> str:
+        """生成跨进程稳定的向量 ID（B3 修复）
+
+        原实现用内置 hash()，受 PYTHONHASHSEED 影响，重启后同一文档 ID 不同，
+        导致重复写入 / 删除失效。改用 sha256 摘要，结果跨进程、跨重启稳定。
+        """
+        return f"vec_{hashlib.sha256(text.encode('utf-8')).hexdigest()[:16]}"
 
     async def retrieve(
         self,
@@ -158,11 +155,30 @@ class RAGService:
             name="rag-search",
             input={"query": query, "top_k": top_k, "filters": filters},
         ) as ret:
+            # ── P5: 结果缓存（命中则跳过 embedding + 检索，仅做缓存命中追踪后返回）──
+            res_key = f"rag:res:{query}:{top_k}:{filters}"
+            cached = await cache.get(res_key)
+            if cached:
+                if ret is not None:
+                    ret.update(
+                        output={
+                            "result_count": len(cached),
+                            "top_scores": [r["score"] for r in cached[:3]],
+                            "source": "cache",
+                        },
+                    )
+                logger.info(f"RAG 检索命中结果缓存: {query[:50]}...")
+                return cached
+
             chroma_results: List[Dict[str, Any]] = []
             chroma = await self._get_chroma()
             # 检测零向量：embedding 不可用时（返回全 0 向量）不再做向量检索，避免污染结果
             if chroma is not None:
-                query_embedding = await embedding_service.encode_single(query)
+                # ── P5: embedding 缓存（命中则跳过远程 embedding 调用）──
+                query_embedding = await cache.get(f"rag:emb:{query}")
+                if query_embedding is None:
+                    query_embedding = await embedding_service.encode_single(query)
+                    await cache.set(f"rag:emb:{query}", query_embedding, expire=3600)
                 is_zero = all(v == 0.0 for v in query_embedding)
             else:
                 is_zero = False
@@ -236,6 +252,8 @@ class RAGService:
                     },
                     metadata={"embedding_model": settings.EMBEDDING_MODEL} if chroma_results else {},
                 )
+            # ── P5: 写入结果缓存 ──
+            await cache.set(res_key, merged, expire=600)
             return merged
 
     def _merge_search_results(
@@ -253,21 +271,43 @@ class RAGService:
         merged = sorted(by_id.values(), key=lambda x: x["score"], reverse=True)
         return merged[:top_k]
 
+    def _tokenize(self, text: str) -> List[str]:
+        """中文友好的轻量分词（B6 修复）
+
+        英文/数字按词切分；中文按「单字 + 相邻二字 bigram」展开，
+        使整句中文也能与知识库问题/关键词逐字、逐段匹配，解决原空白切分
+        导致中文整句成一个 token、几乎不得分的问题。
+        """
+        text = (text or "").lower()
+        tokens: List[str] = []
+        for w in re.findall(r"[a-z0-9]+", text):
+            tokens.append(w)
+        for seg in re.findall(r"[\u4e00-\u9fff]+", text):
+            for ch in seg:
+                tokens.append(ch)
+            for i in range(len(seg) - 1):
+                tokens.append(seg[i:i + 2])
+        return tokens
+
     def _keyword_search(self, query: str, top_k: int, filters: Optional[Dict] = None) -> List[Dict[str, Any]]:
-        """基于关键词的内置知识库检索"""
+        """基于关键词的内置知识库检索（B6 修复：中文逐字/bigram 召回）"""
         query_lower = query.lower()
         scored = []
+        q_token_set = set(self._tokenize(query_lower))
         for kb in BUILT_IN_KNOWLEDGE:
             if filters and filters.get("category") and kb["category"] != filters["category"]:
                 continue
             score = 0.0
-            for word in query_lower.split():
-                if word in kb["question"]:
-                    score += 0.8
-            for kw in kb["keywords"].split():
-                if kw in query_lower:
-                    score += 0.3
-            if any(w in kb["category"] for w in query_lower.split()):
+            q_text = kb["question"].lower()
+            kw_text = kb["keywords"].lower()
+            cat_text = kb["category"].lower()
+            for kw in kw_text.split():
+                if kw and kw in query_lower:
+                    score += 0.4
+            if q_token_set:
+                hit = sum(1 for t in q_token_set if t and t in q_text)
+                score += 0.8 * (hit / len(q_token_set))
+            if cat_text and cat_text in query_lower:
                 score += 0.5
             if score > 0:
                 item = kb.copy()
@@ -318,10 +358,27 @@ class RAGService:
                 gen.update(output=result)
             return result
 
+    async def generate_stream(self, query: str, context: str):
+        """基于检索结果流式生成（P6）。"""
+        if not context:
+            async for piece in llm_service.generate_stream(f"请简洁回答用户问题：{query}"):
+                yield piece
+            return
+
+        prompt = (
+            f"基于以下知识库内容回答用户问题。如果知识库中没有相关信息，"
+            f"请直接告知用户并建议咨询人工客服。\n\n"
+            f"知识库内容：\n{context}\n\n"
+            f"用户问题：{query}\n\n"
+            f"要求：直接回答，简洁专业。如果信息充分则不要提及'根据知识库'等字眼。"
+        )
+        async for piece in llm_service.generate_stream(prompt):
+            yield piece
+
     async def add_document(self, question: str, answer: str, category: str = "", keywords: str = "") -> str:
         """添加文档到向量数据库"""
         text = f"问题: {question}\n答案: {answer}"
-        vector_id = f"vec_{hash(text) & 0xFFFFFFFF:08x}"
+        vector_id = self._make_vector_id(text)
 
         chroma = await self._get_chroma()
         if chroma is not None:

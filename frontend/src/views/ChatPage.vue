@@ -31,7 +31,7 @@
         <h2>您好！我是智能客服小e，很高兴为您服务～请问有什么可以帮到您的？</h2>
         <p>我可以帮您查询订单、了解商品信息、解答售后问题等</p>
         <div class="quick-services">
-          <el-button v-for="s in quickServices" :key="s.code" @click="sendMessage(s.text)" class="quick-service-btn">
+          <el-button v-for="s in quickServices" :key="s.code" @click="sendMessageStream(s.text)" class="quick-service-btn">
             {{ s.icon }} {{ s.name }}
           </el-button>
         </div>
@@ -78,7 +78,7 @@
         :key="idx"
         size="small"
         class="quick-reply-btn"
-        @click="sendMessage(reply)"
+        @click="sendMessageStream(reply)"
       >
         {{ reply }}
       </el-button>
@@ -91,12 +91,12 @@
         type="textarea"
         :rows="inputRows"
         placeholder="输入您的问题，按 Ctrl+Enter 发送..."
-        @keydown.enter.ctrl="sendMessage()"
+        @keydown.enter.ctrl="sendMessageStream()"
         @input="autoResize"
         resize="none"
         class="chat-textarea"
       />
-      <el-button type="primary" class="send-btn" @click="sendMessage()" :disabled="!inputText.trim()" :loading="chatStore.isTyping">
+      <el-button type="primary" class="send-btn" @click="sendMessageStream()" :disabled="!inputText.trim()" :loading="chatStore.isTyping">
         <span v-if="!chatStore.isTyping">➤ 发送</span>
       </el-button>
     </div>
@@ -152,13 +152,18 @@ function autoResize() {
   inputRows.value = Math.min(Math.max(lines, 2), 6)
 }
 
-function sendMessage(text?: string) {
-  const content = text || inputText.value.trim()
-  if (!content) return
+// P6：流式发送入口（模板 quick-service / quick-reply / Ctrl+Enter / 发送 按钮均调用）
+function sendMessageStream(content?: string) {
+  const text = content || inputText.value.trim()
+  if (!text) return
   inputText.value = ''
   inputRows.value = 2
-  chatStore.sendMessage(content)
+  chatStore.sendMessageStream(text)
   nextTick(() => scrollToBottom())
+}
+
+function sendMessage(text?: string) {
+  sendMessageStream(text)
 }
 
 function scrollToBottom() {

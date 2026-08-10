@@ -6,6 +6,7 @@ import logging
 from app.schemas.intent import IntentResult, Entity
 from app.services.llm_service import llm_service
 from app.services.observe_service import observe
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -93,8 +94,12 @@ class IntentService:
         # 1. 关键词匹配
         keyword_result = self._keyword_match(text)
 
-        # 2. LLM 深度理解
-        llm_result = await self._llm_understand(text)
+        # 2. LLM 深度理解（P2 优化：关键词高置信命中则跳过 LLM，意图分类调用减半）
+        if keyword_result is not None and keyword_result.confidence >= settings.INTENT_THRESHOLD:
+            logger.info("关键词高置信命中，跳过 LLM 意图分类")
+            llm_result = None
+        else:
+            llm_result = await self._llm_understand(text)
 
         # 3. 多策略融合：取最高置信度*优先级
         final = self._fuse_intents(keyword_result, llm_result)

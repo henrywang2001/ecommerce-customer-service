@@ -6,11 +6,12 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
-from app.api.v1 import chat, intent, agent, knowledge, order, product, analytics
+from app.api.v1 import chat, intent, agent, knowledge, order, product, analytics, auth
 from starlette.requests import Request
 from fastapi.responses import JSONResponse
 
-from app.utils.rate_limiter import rate_limiter
+from app.utils.rate_limiter import rate_limiter, heavy_rate_limiter
+from app.utils.http_client import get_http_client, close_http_client
 from app.core.security import decode_access_token
 
 # 配置日志
@@ -57,9 +58,24 @@ async def lifespan(app: FastAPI):
         logger.warning(f"数据库连接失败（将使用内存模式）: {e}")
 
     logger.info("应用启动完成")
+
+    # 预热共享 HTTP 连接池（P1）
+    try:
+        get_http_client()
+        logger.info("共享 HTTP 连接池已就绪")
+    except Exception as e:
+        logger.warning(f"HTTP 连接池预热失败: {e}")
+
     yield
 
     logger.info("应用关闭中...")
+
+    # 关闭共享 HTTP 连接池（P1）
+    try:
+        await close_http_client()
+        logger.info("HTTP 连接池已关闭")
+    except Exception as e:
+        logger.warning(f"关闭 HTTP 连接池失败: {e}")
     try:
         from app.core.database import _get_engine
         eng = _get_engine()
@@ -97,6 +113,7 @@ app.include_router(knowledge.router, prefix="/api/v1/knowledge", tags=["知识�
 app.include_router(order.router, prefix="/api/v1/order", tags=["订单服务"])
 app.include_router(product.router, prefix="/api/v1/product", tags=["商品服务"])
 app.include_router(analytics.router, prefix="/api/v1/analytics", tags=["数据分析"])
+app.include_router(auth.router, prefix="/api/v1/auth", tags=["认证"])
 
 
 # ── 全局限流中间件（防滥用）──
@@ -107,31 +124,45 @@ async def ratelimit_middleware(request: Request, call_next):
     不修改 rate_limiter 本身，仅在此处接线使其对全部请求生效。
     """
     client_ip = request.client.host if request.client else "anonymous"
-    if not rate_limiter.is_allowed(client_ip):
+    # P4：昂贵接口（触发 LLM/Embedding 的重度路径）使用更严格的限流器
+    heavy_paths = {"/api/v1/chat/send", "/api/v1/chat/send_stream", "/api/v1/agent/process"}
+    limiter = heavy_rate_limiter if request.url.path in heavy_paths else rate_limiter
+    if not await limiter.is_allowed(client_ip):
         return JSONResponse(status_code=429, content={"detail": "请求过于频繁，请稍后再试。"})
     return await call_next(request)
 
 
-# ── 全局鉴权中间件（H2：生产环境开关）──
-PUBLIC_PATHS = {"/", "/health", "/docs", "/openapi.json", "/redoc"}
+# ── 全局鉴权中间件（B2：生产环境默认开启）──
+# 永远公开：健康检查、根路径、认证路由（登录/注册本身不能要求鉴权）
+PUBLIC_PATHS = {"/", "/health"}
+AUTH_ROUTES = {"/api/v1/auth/login", "/api/v1/auth/register"}
+# 文档仅在 DEBUG（开发）模式下公开；生产(DEBUG=False)下同样需鉴权，避免信息泄露
+DOCS_PATHS = {"/docs", "/openapi.json", "/redoc"}
 
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
-    """当 REQUIRE_AUTH=True 时，全站（白名单除外）需 Bearer JWT，否则 401；默认关闭。"""
-    if not settings.REQUIRE_AUTH:
-        return await call_next(request)
-
+    """鉴权网关：
+    - REQUIRE_AUTH=False：放行，但仍在 request.state.user 写入可解析的令牌（供业务层使用）。
+    - REQUIRE_AUTH=True：无有效 Bearer JWT 即 401（公开路径除外）。
+    - /docs 等文档路径仅在 DEBUG 下公开，生产环境强制鉴权。
+    """
     path = request.url.path
-    if path in PUBLIC_PATHS or path.startswith(("/docs", "/openapi", "/redoc")):
+    if path in PUBLIC_PATHS or path in AUTH_ROUTES:
+        return await call_next(request)
+    if settings.DEBUG and path in DOCS_PATHS:
         return await call_next(request)
 
+    # 解析令牌（无论是否开启鉴权都尝试解析，供业务层取 identity）
+    request.state.user = None
     auth = request.headers.get("Authorization", "")
-    if not auth.startswith("Bearer "):
+    if auth.startswith("Bearer "):
+        payload = decode_access_token(auth[len("Bearer "):])
+        if payload:
+            request.state.user = payload
+
+    if settings.REQUIRE_AUTH and not request.state.user:
         return JSONResponse(status_code=401, content={"detail": "未认证或认证失效，请提供 Bearer 令牌。"})
-    payload = decode_access_token(auth[len("Bearer "):])
-    if not payload:
-        return JSONResponse(status_code=401, content={"detail": "无效或过期的令牌。"})
     return await call_next(request)
 
 

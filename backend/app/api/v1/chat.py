@@ -1,5 +1,12 @@
 """对话 API 路由"""
-from fastapi import APIRouter, HTTPException
+from typing import Optional
+
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
+import json
+import logging
+
+from app.core.security import current_user_id
 from app.schemas.chat import (
     SendMessageRequest, SendMessageResponse,
     CreateSessionRequest, CreateSessionResponse,
@@ -11,15 +18,22 @@ from app.schemas.chat import (
 from app.services.chat_service import chat_service
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+
+
+def _resolve_user_id(request: Request, fallback: Optional[int]) -> Optional[int]:
+    """鉴权用户优先（令牌不可伪造）；demo 模式回退到前端传入值。"""
+    uid = current_user_id(request)
+    return uid if uid is not None else fallback
 
 
 @router.post("/session", response_model=CreateSessionResponse)
-async def create_session(req: CreateSessionRequest = None):
+async def create_session(req: CreateSessionRequest = None, request: Request = None):
     """创建新会话"""
     if req is None:
         req = CreateSessionRequest()
     result = await chat_service.create_session(
-        user_id=req.user_id,
+        user_id=_resolve_user_id(request, req.user_id),
         channel=req.channel,
         initial_message=req.initial_message,
     )
@@ -27,15 +41,36 @@ async def create_session(req: CreateSessionRequest = None):
 
 
 @router.post("/send", response_model=SendMessageResponse)
-async def send_message(req: SendMessageRequest):
+async def send_message(req: SendMessageRequest, request: Request = None):
     """发送消息"""
     result = await chat_service.send_message(
         session_id=req.session_id,
         content=req.content,
-        user_id=req.user_id,
+        user_id=_resolve_user_id(request, req.user_id),
         content_type=req.content_type,
     )
     return SendMessageResponse(**result)
+
+
+@router.post("/send_stream")
+async def send_message_stream(req: SendMessageRequest, request: Request = None):
+    """流式发送消息（SSE，P6）：逐 token 推送，首字延迟大幅降低。"""
+    uid = _resolve_user_id(request, req.user_id)
+
+    async def event_gen():
+        try:
+            async for chunk in chat_service.stream_message(
+                session_id=req.session_id,
+                content=req.content,
+                user_id=uid,
+                content_type=req.content_type,
+            ):
+                yield chunk
+        except Exception as e:
+            logger.error(f"流式回复失败: {e}")
+            yield f"data: {json.dumps({'type': 'error', 'message': '抱歉，服务暂时不可用，请稍后重试。'}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(event_gen(), media_type="text/event-stream")
 
 
 @router.get("/history", response_model=MessageListResponse)
@@ -60,9 +95,10 @@ async def rate_session(req: RateSessionRequest):
 
 
 @router.get("/sessions", response_model=SessionListResponse)
-async def list_sessions():
-    """获取会话列表"""
-    result = await chat_service.list_sessions()
+async def list_sessions(request: Request = None):
+    """获取会话列表（F4：按当前登录用户隔离；demo 模式返回全部）"""
+    uid = current_user_id(request) if request is not None else None
+    result = await chat_service.list_sessions(user_id=uid)
     return SessionListResponse(**result)
 
 
