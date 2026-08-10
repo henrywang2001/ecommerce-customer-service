@@ -8,6 +8,7 @@ from typing import Optional
 import asyncio
 import time
 import logging
+from contextlib import asynccontextmanager
 
 import httpx
 from tenacity import (
@@ -61,6 +62,33 @@ class CircuitBreaker:
                     self._opened_at = time.time()
             raise
 
+    @asynccontextmanager
+    async def call_cm(self, cm_fn):
+        """包裹「返回异步上下文管理器」的协程工厂（如 client.stream），提供熔断 fail-fast。
+
+        与 call 不同：client.stream(...) 返回的是 async context manager（不可 await），
+        因此这里不 await cm_fn()，而是在进入 async with 前检查熔断状态；连接/流成功则
+        清零失败计数，异常则累加（保守）。长连接流本身不做 tenacity 重试。
+        """
+        async with self._lock:
+            if self._opened_at is not None and (
+                time.time() - self._opened_at < self.cooldown_seconds
+            ):
+                raise CircuitBreakerOpen("circuit breaker open")
+        try:
+            cm = cm_fn()  # 返回上下文管理器（同步，切勿 await）
+            async with cm as result:
+                yield result
+            async with self._lock:
+                self._failures = 0
+                self._opened_at = None
+        except Exception:
+            async with self._lock:
+                self._failures += 1
+                if self._failures >= self.failure_threshold:
+                    self._opened_at = time.time()
+            raise
+
 
 llm_breaker = CircuitBreaker(
     failure_threshold=settings.UPSTREAM_LLM_CB_FAILURES,
@@ -102,14 +130,14 @@ async def post_with_resilience(client, url, semaphore, breaker, **kwargs):
 
 
 async def stream_post(client, url, semaphore, breaker, **kwargs):
-    """带 并发信号量 + 熔断 的上游流式 POST（P6）；熔断仅包裹连接建立阶段。
+    """带 并发信号量 + 熔断 的上游流式 POST（P6）。
 
-    注意：长连接流不做 tenacity 整体重试（已半发送无法重放），连接建立失败会
-    抛异常由调用方捕获并优雅降级。
+    注意：长连接流不做 tenacity 整体重试（已半发送无法重放）；熔断通过 call_cm
+    包裹 client.stream 的进入/退出阶段实现 fail-fast，连接建立失败会抛异常由
+    调用方捕获并优雅降级。
     """
     async with semaphore:
-        cm = await breaker.call(lambda: client.stream("POST", url, **kwargs))
-        async with cm as response:
+        async with breaker.call_cm(lambda: client.stream("POST", url, **kwargs)) as response:
             if response.status_code >= 400:
                 await response.aread()
                 raise httpx.HTTPStatusError(
