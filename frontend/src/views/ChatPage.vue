@@ -5,15 +5,16 @@
       <div class="header-info">
         <span class="bot-name">🤖 智能客服小e</span>
         <span class="status" :class="chatStore.isConnected ? 'online' : 'offline'">
-          {{ chatStore.isConnected ? '在线' : '离线' }}
+          {{ chatStore.isConnected ? 'AI 服务可用' : 'AI 服务不可用' }}
         </span>
       </div>
-      <div class="header-actions">
-        <el-button size="small" class="nav-btn theme-toggle" @click="toggleTheme">
-          {{ isDark ? '☀️' : '🌙' }}
-        </el-button>
-      </div>
     </header>
+
+    <!-- 连接异常横幅（U3） -->
+    <div v-if="!chatStore.isConnected" class="conn-banner" role="alert">
+      <span>⚠️ {{ chatStore.sessionError || 'AI 服务暂不可用' }}</span>
+      <el-button size="small" type="primary" @click="chatStore.retryInit()">重新连接</el-button>
+    </div>
 
     <!-- 情感指示器 -->
     <transition name="emotion-slide">
@@ -24,11 +25,11 @@
     </transition>
 
     <!-- 聊天消息区域 -->
-    <div class="chat-messages" ref="messagesContainer" @scroll="onScroll">
+    <div class="chat-messages" ref="messagesContainer" @scroll="onScroll" role="log" aria-live="polite" aria-relevant="additions" aria-label="对话消息区">
       <!-- 欢迎消息 -->
       <div v-if="chatStore.messages.length === 0" class="welcome">
         <div class="welcome-icon">🤖</div>
-        <h2>您好！我是智能客服小e，很高兴为您服务～请问有什么可以帮到您的？</h2>
+        <h2>您好！我是智能客服小e，一个由 AI 驱动的客服助手，很高兴为您服务～请问有什么可以帮到您的？</h2>
         <p>我可以帮您查询订单、了解商品信息、解答售后问题等</p>
         <div class="quick-services">
           <el-button v-for="s in quickServices" :key="s.code" @click="sendMessageStream(s.text)" class="quick-service-btn">
@@ -43,20 +44,22 @@
         :key="msg.id"
         class="message-row"
         :class="{ 'is-user': msg.isUser, 'is-error': msg.isError }"
+        role="listitem"
       >
-        <div class="avatar">{{ msg.isUser ? '👤' : '🤖' }}</div>
-        <div class="bubble" :class="[msg.isUser ? 'bubble-user' : 'bubble-bot', { 'bubble-error': msg.isError }]">
-          <div class="message-text">{{ msg.content }}</div>
+        <div class="avatar" aria-hidden="true">{{ msg.isUser ? '👤' : '🤖' }}</div>
+        <div class="bubble" :class="[msg.isUser ? 'bubble-user' : 'bubble-bot', { 'bubble-error': msg.isError }]" :role="msg.isError ? 'alert' : undefined">
+          <div class="message-text" v-html="renderMarkdown(msg.content)"></div>
           <div class="message-time">{{ formatTime(msg.createdAt) }}</div>
           <div v-if="msg.intent && !msg.isUser" class="intent-tag">
             <span class="intent-dot"></span>
             <span>{{ msg.intent.intent_name }} ({{ (msg.intent.confidence * 100).toFixed(0) }}%)</span>
           </div>
+          <div v-if="!msg.isUser" class="ai-badge">由 AI 生成</div>
         </div>
       </div>
 
       <!-- 正在输入中 -->
-      <div v-if="chatStore.isTyping" class="message-row">
+      <div v-if="chatStore.isTyping" class="message-row" aria-hidden="true">
         <div class="avatar">🤖</div>
         <div class="bubble bubble-bot typing-dots">
           <span></span><span></span><span></span>
@@ -90,13 +93,15 @@
         v-model="inputText"
         type="textarea"
         :rows="inputRows"
-        placeholder="输入您的问题，按 Ctrl+Enter 发送..."
-        @keydown.enter.ctrl="sendMessageStream()"
+        placeholder="输入您的问题，按 Enter 发送，Shift+Enter 换行"
+        @keydown.enter.exact.prevent="sendMessageStream()"
         @input="autoResize"
         resize="none"
         class="chat-textarea"
+        :disabled="!chatStore.isConnected"
+        aria-label="输入您的问题"
       />
-      <el-button type="primary" class="send-btn" @click="sendMessageStream()" :disabled="!inputText.trim()" :loading="chatStore.isTyping">
+      <el-button type="primary" class="send-btn" @click="sendMessageStream()" :disabled="!chatStore.isConnected || !inputText.trim()" :loading="chatStore.isTyping" aria-label="发送消息">
         <span v-if="!chatStore.isTyping">➤ 发送</span>
       </el-button>
     </div>
@@ -106,16 +111,18 @@
 <script setup lang="ts">
 import { ref, computed, nextTick } from 'vue'
 import { useChatStore } from '@/stores/chat'
+import { useThemeStore } from '@/stores/theme'
+import { renderMarkdown } from '@/utils/markdown'
 
 // F1 守卫：必须显式声明组件名，否则 keep-alive include="ChatPage" 无法命中
 defineOptions({ name: 'ChatPage' })
 
 const chatStore = useChatStore()
+const themeStore = useThemeStore()
 const inputText = ref('')
 const messagesContainer = ref<HTMLElement>()
 const showScrollBtn = ref(false)
 const inputRows = ref(2)
-const isDark = ref(localStorage.getItem('theme') === 'dark')
 
 const quickServices = [
   { code: 'order', icon: '📦', name: '查订单', text: '我想查一下我的订单' },
@@ -134,12 +141,6 @@ const sentimentLabel = computed(() => {
   return map[chatStore.currentSentiment || 'neutral'] || ''
 })
 
-function toggleTheme() {
-  isDark.value = !isDark.value
-  document.body.classList.toggle('dark', isDark.value)
-  localStorage.setItem('theme', isDark.value ? 'dark' : 'light')
-}
-
 function onScroll() {
   if (!messagesContainer.value) return
   const el = messagesContainer.value
@@ -154,6 +155,7 @@ function autoResize() {
 
 // P6：流式发送入口（模板 quick-service / quick-reply / Ctrl+Enter / 发送 按钮均调用）
 function sendMessageStream(content?: string) {
+  if (chatStore.isTyping) return
   const text = content || inputText.value.trim()
   if (!text) return
   inputText.value = ''
@@ -334,7 +336,19 @@ function formatTime(timeStr: string): string {
   box-shadow: 0 1px 4px rgba(244, 67, 54, 0.15) !important;
 }
 
-.message-text { font-size: 14px; word-break: break-word; white-space: pre-wrap; }
+.message-text { font-size: 14px; word-break: break-word; line-height: 1.7; }
+.message-text > :first-child { margin-top: 0; }
+.message-text > :last-child { margin-bottom: 0; }
+.message-text p { margin: 0 0 8px; }
+.message-text ul, .message-text ol { margin: 0 0 8px; padding-left: 20px; }
+.message-text li { margin: 2px 0; }
+.message-text pre { background: rgba(0,0,0,0.04); border-radius: 8px; padding: 10px 12px; overflow-x: auto; margin: 8px 0; }
+.message-text code { font-family: 'SFMono-Regular', Consolas, monospace; font-size: 13px; background: rgba(0,0,0,0.05); padding: 1px 5px; border-radius: 4px; }
+.message-text pre code { background: transparent; padding: 0; }
+.message-text blockquote { border-left: 3px solid var(--accent); margin: 8px 0; padding: 2px 12px; color: var(--text-secondary); }
+.message-text table { border-collapse: collapse; margin: 8px 0; font-size: 13px; }
+.message-text th, .message-text td { border: 1px solid var(--border-color); padding: 4px 8px; }
+.message-text a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
 .message-text :deep(a) {
   color: inherit;
   text-decoration: underline;
@@ -449,4 +463,11 @@ function formatTime(timeStr: string): string {
   .chat-textarea :deep(.el-textarea__inner) { font-size: 14px; }
   .header-actions .el-button { padding: 4px 8px; font-size: 12px; }
 }
+
+.conn-banner {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 8px 16px; background: #fff3cd; color: #856404; font-size: 13px;
+  border-bottom: 1px solid #ffe69c;
+}
+.ai-badge { font-size: 10px; color: var(--text-muted); margin-top: 4px; opacity: 0.85; }
 </style>

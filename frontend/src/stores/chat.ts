@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import { ElMessage } from 'element-plus'
 import { chatApi, streamSend } from '@/api/chat'
 import request from '@/utils/request'
 import { useAuthStore } from '@/stores/auth'
@@ -21,6 +22,7 @@ export const useChatStore = defineStore('chat', () => {
   const quickReplies = ref<string[]>([])
   const isConnected = ref(false)
   const isTyping = ref(false)
+  const sessionError = ref<string | null>(null)
 
   // 本地消息缓存（按 sessionId 存储，供 selectSession / restoreFromLocal 复用）
   const messagesBySession = ref<Record<string, Message[]>>({})
@@ -91,12 +93,23 @@ export const useChatStore = defineStore('chat', () => {
       persistToLocal()
     } catch (error) {
       console.error('初始化会话失败:', error)
+      isConnected.value = false
+      sessionError.value = '会话连接失败，请检查网络后重试'
+      ElMessage.error('会话连接失败，请稍后重试')
     }
+  }
+
+  async function retryInit() {
+    sessionError.value = null
+    await initSession()
   }
 
   async function sendMessage(content: string) {
     const sid = sessionId.value
-    if (!sid) return
+    if (!sid) {
+      if (!sessionError.value) ElMessage.warning('会话未建立，请稍后再试')
+      return
+    }
 
     // 该会话的权威缓冲区（缺失时用当前视图初始化，保留欢迎语/历史）
     const buf =
@@ -165,7 +178,10 @@ export const useChatStore = defineStore('chat', () => {
 
   async function sendMessageStream(content: string) {
     const sid = sessionId.value
-    if (!sid) return
+    if (!sid) {
+      if (!sessionError.value) ElMessage.warning('会话未建立，请稍后再试')
+      return
+    }
 
     const buf =
       messagesBySession.value[sid] ||
@@ -438,6 +454,7 @@ export const useChatStore = defineStore('chat', () => {
     quickReplies,
     isConnected,
     isTyping,
+    sessionError,
     lastMessage,
     initSession,
     sendMessage,
@@ -450,5 +467,6 @@ export const useChatStore = defineStore('chat', () => {
     restoreFromLocal,
     clearMessages,
     deleteSession,
+    retryInit,
   }
 })

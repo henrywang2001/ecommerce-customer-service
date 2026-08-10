@@ -1,10 +1,16 @@
 <template>
   <div class="main-layout">
     <!-- 左侧边栏（U1：会话侧边栏重构） -->
-    <aside class="sidebar">
+    <aside class="sidebar" :class="{ open: sidebarOpen }">
       <div class="sidebar-logo">
         <span class="logo-icon">🤖</span>
         <span class="logo-text">智能客服小e</span>
+        <button class="menu-toggle" type="button" aria-label="打开/关闭菜单" @click="sidebarOpen = !sidebarOpen">☰</button>
+        <button class="theme-btn" type="button"
+          :aria-label="themeStore.isDark ? '切换到浅色模式' : '切换到深色模式'"
+          @click="themeStore.toggle">
+          {{ themeStore.isDark ? '☀️' : '🌙' }}
+        </button>
       </div>
 
       <el-button class="new-chat-btn" type="primary" @click="handleNewChat">
@@ -17,7 +23,7 @@
           :key="s.sessionId"
           class="session-item"
           :class="{ active: s.sessionId === chatStore.sessionId }"
-          @click="chatStore.selectSession(s.sessionId); router.push('/')"
+          @click="chatStore.selectSession(s.sessionId); router.push('/'); sidebarOpen = false"
         >
           <div class="session-label">{{ sessionLabel(s) }}</div>
           <div class="session-time">{{ sessionTime(s) }}</div>
@@ -34,14 +40,26 @@
       </div>
 
       <nav class="sidebar-nav">
-        <div class="nav-entry" @click="router.push('/dashboard')">
+        <div class="nav-entry" @click="router.push('/dashboard'); sidebarOpen = false">
           📊 看板
         </div>
-        <div class="nav-entry" @click="router.push('/knowledge')">
+        <div class="nav-entry" @click="router.push('/knowledge'); sidebarOpen = false">
           📚 知识库
         </div>
       </nav>
+
+      <!-- 用户区（F6：登录态展示与退出） -->
+      <div class="sidebar-user" v-if="authStore.user">
+        <div class="user-meta">
+          <span class="user-avatar">👤</span>
+          <span class="user-name">{{ authStore.user.username }}</span>
+        </div>
+        <button class="user-logout" title="退出登录" @click="onLogout">退出</button>
+      </div>
     </aside>
+
+    <!-- 移动端遮罩：点击关闭抽屉 -->
+    <div class="sidebar-backdrop" v-if="sidebarOpen" @click="sidebarOpen = false" aria-hidden="true"></div>
 
     <!-- 右侧内容区：keep-alive 命中 ChatPage（F1 守卫） -->
     <main class="content">
@@ -55,16 +73,23 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useChatStore } from '@/stores/chat'
+import { useAuthStore } from '@/stores/auth'
+import { useThemeStore } from '@/stores/theme'
 import { ElMessageBox } from 'element-plus'
 import type { SessionInfo } from '@/types/chat'
 
 const router = useRouter()
 const chatStore = useChatStore()
+const authStore = useAuthStore()
+const sidebarOpen = ref(false)
+const themeStore = useThemeStore()
 
 onMounted(async () => {
+  // F6：用本地令牌恢复最新用户信息（刷新后保持登录态）
+  await authStore.fetchMe()
   // B1/F1：优先从本地缓存恢复最近会话与消息，命中则免后端调用
   const restored = await chatStore.restoreFromLocal()
   if (!restored) {
@@ -72,6 +97,16 @@ onMounted(async () => {
     await chatStore.initSession()
   }
 })
+
+async function onLogout() {
+  try {
+    await ElMessageBox.confirm('确定退出当前账号吗？', '退出登录', { type: 'warning' })
+  } catch {
+    return
+  }
+  authStore.logout()
+  router.push('/login')
+}
 
 function sessionLabel(s: SessionInfo): string {
   // 用 sessionId 片段做标签，避免裸 ID（F4）
@@ -109,6 +144,7 @@ async function onDeleteSession(s: SessionInfo, event: Event) {
   await chatStore.deleteSession(s.sessionId)
   // 若删除的是当前会话且已切换/新建，回到聊天页确保视图正确
   router.push('/')
+  sidebarOpen.value = false
 }
 
 // 新建对话：先建会话（会设为当前会话），若当前不在聊天页则切回，避免在面板页停留
@@ -117,6 +153,7 @@ async function handleNewChat() {
   if (router.currentRoute.value.path !== '/') {
     router.push('/')
   }
+  sidebarOpen.value = false
 }
 </script>
 
@@ -237,6 +274,47 @@ async function handleNewChat() {
   color: var(--accent);
 }
 
+/* ===== 用户区 ===== */
+.sidebar-user {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border-color);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.user-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.user-avatar { font-size: 18px; }
+.user-name {
+  font-size: 13px;
+  color: var(--text-primary);
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.user-logout {
+  flex-shrink: 0;
+  border: 1px solid var(--border-color);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+.user-logout:hover {
+  background: var(--accent-light);
+  color: var(--accent);
+}
+
 /* ===== 内容区 ===== */
 .content {
   flex: 1;
@@ -249,4 +327,48 @@ async function handleNewChat() {
 /* 深色模式 */
 body.dark .sidebar { background: var(--bg-secondary); }
 body.dark .session-label { color: var(--text-primary); }
+
+.menu-toggle {
+  margin-left: auto;
+  border: none;
+  background: transparent;
+  font-size: 20px;
+  cursor: pointer;
+  color: var(--text-primary);
+  display: none; /* 仅移动端显示 */
+}
+.sidebar-backdrop {
+  display: none;
+}
+@media (max-width: 768px) {
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 100vh;
+    z-index: 1000;
+    transform: translateX(-100%);
+    transition: transform 0.3s ease;
+    box-shadow: 0 0 20px rgba(0,0,0,0.2);
+  }
+  .sidebar.open { transform: translateX(0); }
+  .content { width: 100%; }
+  .menu-toggle { display: block; }
+  .sidebar-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.4);
+    z-index: 999;
+  }
+}
+
+.theme-btn {
+  margin-left: auto;
+  border: none;
+  background: transparent;
+  font-size: 18px;
+  cursor: pointer;
+  line-height: 1;
+}
 </style>

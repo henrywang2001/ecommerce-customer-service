@@ -25,7 +25,19 @@ request.interceptors.request.use(
 request.interceptors.response.use(
   (response) => response.data,
   (error) => {
+    const status = error?.response?.status
     const data = error?.response?.data
+
+    // 401：令牌缺失/失效 → 清空登录态并跳转到登录页（F6）
+    if (status === 401) {
+      localStorage.removeItem('token')
+      sessionStorage.removeItem('token')
+      const path = window.location.pathname
+      if (path !== '/login' && path !== '/register') {
+        window.location.href = '/login'
+      }
+    }
+
     let msg = '请求失败，请稍后重试'
     if (data?.detail) {
       msg = typeof data.detail === 'string' ? data.detail : (data.detail.message || msg)

@@ -9,15 +9,8 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted } from 'vue'
-
-// 页面加载时从 localStorage 恢复深色模式
-onMounted(() => {
-  const saved = localStorage.getItem('theme')
-  if (saved === 'dark') {
-    document.body.classList.add('dark')
-  }
-})
+import { useThemeStore } from '@/stores/theme'
+useThemeStore() // 启动时应用并监听主题（单一可信源）
 </script>
 
 <style>
