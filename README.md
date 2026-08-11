@@ -20,8 +20,9 @@ Vue3 + FastAPI + LLM + RAG + Agent 的电商智能客服系统。融合了大语
 - **AI 服务**：DeepSeek（LLM）+ 千问 text-embedding-v1（向量）
 - **认证**：JWT（HS256，pbkdf2_sha256 密码哈希）+ 全站 Bearer 鉴权（`REQUIRE_AUTH` 开关）
 - **数据库**：MySQL（可选）+ Redis（可选）+ ChromaDB（向量数据库），均可在不可用时自动降级
-- **Agent 架构**：ReAct（Reasoning + Acting），6 个工具全量接线
-- **可观测性**：Langfuse（全链路追踪/LLM调用监控/RAG检索分析）
+- **Agent 架构**：ReAct（Reasoning + Acting），6 个工具全量接线，声明式注册表 + @tool 装饰器
+- **可观测性**：Langfuse（全链路追踪/LLM调用监控/RAG检索分析）+ Prometheus 指标 + 结构化日志
+- **容器化**：Docker Compose 一键部署（nginx 边缘网关 + backend + frontend + Redis）
 
 ## 📁 项目结构
 
@@ -42,23 +43,25 @@ ecommerce-customer-service/
 │   │   │   ├── config.py      # 应用配置（LLM/Embedding/JWT/限流，路径绝对化）
 │   │   │   ├── database.py    # 数据库连接
 │   │   │   └── security.py    # JWT 安全认证（pbkdf2_sha256 哈希）
-│   │   ├── data/              # 统一 Mock 数据源（订单/商品，F5 消除双源漂移）
+│   │   ├── data/              # 统一 Mock 数据源（订单/商品，消除双源漂移）
 │   │   │   └── mock_data.py
 │   │   ├── models/            # SQLAlchemy 模型
 │   │   ├── schemas/           # Pydantic Schemas（含 user.py）
 │   │   ├── services/          # 核心业务服务
 │   │   │   ├── llm_service.py         # LLM 服务（DeepSeek，重试/熔断/并发控制）
 │   │   │   ├── embedding_service.py   # Embedding 服务（千问）
-│   │   │   ├── intent_service.py      # 意图识别（预识别短路 + 同义词归一化）
-│   │   │   ├── sentiment_service.py   # 情感分析（词典+规则：B4负向修正）
+│   │   │   ├── intent_service.py      # 意图识别（声明式配置 + 预识别短路 + 同义词归一化）
+│   │   │   ├── sentiment_service.py   # 情感分析（词典+规则：负向修正）
 │   │   │   ├── rag_service.py         # RAG 检索增强生成（双路检索：向量+关键词）
-│   │   │   ├── chat_service.py        # 对话服务（会话治理 + 流式 + 满意度评价）
-│   │   │   ├── user_service.py        # 用户服务（内存表 + 演示账号）
-│   │   │   └── observe_service.py     # Langfuse 可观测性服务
+│   │   │   ├── chat_service.py        # 对话服务（handler 分层 + 流式 + 满意度 + 全链路 trace）
+│   │   │   ├── user_service.py        # 用户服务（DB 持久化 + 演示账号兜底）
+│   │   │   ├── observe_service.py     # Langfuse 可观测性服务
+│   │   │   └── providers/             # Provider 抽象层（LLM/Embedding/VectorStore ABC）
 │   │   ├── agents/            # Agent 系统
 │   │   │   ├── base_agent.py          # Agent 基类
 │   │   │   ├── customer_agent.py      # 客服 Agent（ReAct，敏感工具需登录）
 │   │   │   ├── tools/                 # 6 个工具（订单/商品/退款/工单/转人工/RAG）
+│   │   │   │   └── registry.py        # 工具注册表（@tool 装饰器 + 意图→工具映射）
 │   │   │   └── prompts/               # 提示词模板
 │   │   ├── rag/               # RAG 模块
 │   │   │   ├── chroma_client.py       # ChromaDB 客户端单例
@@ -66,9 +69,10 @@ ecommerce-customer-service/
 │   │   │   ├── text_splitter.py       # 文本分块
 │   │   │   └── vector_store.py        # 向量存储（检索/写入）
 │   │   └── utils/             # 工具（缓存/限流/HTTP/日志）
-│   ├── tests/                  # 测试（API/聊天服务/RAG）
+│   ├── tests/                  # 测试（API/聊天服务/RAG/DI注入/配置校验/持久化/工具注册表）
 │   ├── scripts/               # 初始化脚本
 │   ├── requirements.txt
+│   ├── Dockerfile              # 后端容器镜像
 │   └── .env.example           # 环境变量模板（复制为 .env 使用）
 ├── frontend/                   # Vue3 前端
 │   ├── src/
@@ -79,7 +83,11 @@ ecommerce-customer-service/
 │   │   ├── types/             # TypeScript 类型定义
 │   │   └── router/            # Vue Router（登录守卫）
 │   ├── package.json
+│   ├── Dockerfile              # 前端容器镜像（nginx 静态托管）
 │   └── vite.config.ts
+├── docker/                      # 容器编排
+│   └── nginx/nginx.conf        # 边缘网关配置
+├── docker-compose.yml           # 一键部署编排
 ├── knowledge_base/             # 知识库文件
 ├── README.md
 └── RUN_GUIDE.md                # 运行指南
@@ -132,16 +140,21 @@ chat-send-message (根 span)
 | 模块 | 特性 | 说明 |
 |------|------|------|
 | 全站鉴权 | JWT + 中间件 | `REQUIRE_AUTH` 默认开启；占位 SECRET_KEY 运行时自动随机化；敏感工具需登录 |
+| Provider 抽象层 | 厂商解耦 | LLM/Embedding/VectorStore ABC + 工厂函数，切换厂商仅改配置（`LLM_PROVIDER` 等） |
+| 工具注册表 | @tool 装饰器 | 声明式工具注册 + 意图触发映射，新增工具只需 1 个类 + 1 行装饰器 |
 | 全局中间件 | 差异化限流 | 昂贵接口（/send、/send_stream、/agent/process）30 次/分钟，超限 429 |
-| 会话治理 | TTL + LRU + 用户隔离 | 24h 空闲自动失效，200 会话容量上限，会话按用户隔离 |
-| 流式对话 | SSE | `/send_stream` 逐 token 推送，前端边生成边渲染 |
-| RAG 双路检索 | 向量 + 关键词 | ChromaDB 单例 + collection 非空缓存，统一走 `rag_service.search` |
+| 会话治理 | TTL + LRU + 用户隔离 | 24h 空闲自动失效，200 会话容量上限，会话按用户隔离（Redis 优先 / 内存回退） |
+| 流式对话 | SSE | `/send_stream` 逐 token 推送，前端边生成边渲染，全链路 trace 传播 |
+| RAG 双路检索 | 向量 + 关键词 | ChromaDB 单例 + collection 非空缓存 + 关键词预索引，统一走 `rag_service.search` |
 | 数据收敛 | 单一数据源 | 订单/商品统一从 `data/mock_data.py` 读取，杜绝双源漂移 |
-| 上游弹性 | 重试 + 熔断 + 并发 | LLM/Embedding 上游限流熔断，差异化退避重试 |
-| Agent 工具接线 | ReAct 框架 | 6 个工具全量接入，转人工/Ticket/RAG 均走工具分发 |
-| 缓存 | Redis + 内存回退 | 优先 Redis，不可用时回退有界 TTL 内存缓存，防内存泄漏 |
+| 上游弹性 | 重试 + 熔断 + 并发 | LLM/Embedding 上游限流熔断，差异化退避重试（参数统一收口 config.py） |
+| Agent 工具接线 | ReAct 框架 | 6 个工具全量接入，声明式意图配置，转人工/Ticket/RAG 均走工具分发 |
+| 缓存 | Redis + 内存回退 | 优先 Redis，不可用时回退有界 TTL 内存缓存（maxsize=1000），防内存泄漏 |
+| 健康探针 | K8s 兼容 | `/healthz` 存活探针、`/readyz` 就绪探针（含 Redis/Chroma/LLM Key 检查） |
+| Prometheus | 指标暴露 | `/metrics`（Prometheus 格式）、`/stats`（JSON），含请求数/延迟/活跃会话/限流 |
+| Docker 部署 | 一键编排 | `docker-compose up`：nginx 网关 + backend + frontend + Redis，含健康检查 |
 | 前端体验 | 窗口化 + 满意度 | 消息窗口化渲染、1-5 星满意度评价、连接异常重连 |
-| 安全 | .env 密钥隔离 | API Key 仅在 `backend/.env`（已 .gitignore），仓库只含占位符模板 |
+| 安全 | .env 密钥隔离 | API Key 仅在 `backend/.env`（已 .gitignore），仓库只含占位符模板；生产环境强制校验 |
 
 ### 配置
 
@@ -158,6 +171,15 @@ LLM_MODEL=deepseek-v4-flash
 
 # Embedding
 EMBEDDING_API_KEY=your-dashscope-api-key
+
+# Provider 抽象层（切换厂商仅改此处）
+LLM_PROVIDER=deepseek
+EMBEDDING_PROVIDER=dashscope
+VECTORSTORE_PROVIDER=chroma
+
+# 会话治理
+SESSION_MAX_COUNT=200
+SESSION_TTL=86400
 
 # Langfuse 可观测性（可选）
 LANGFUSE_PUBLIC_KEY=pk-lf-...
