@@ -62,8 +62,8 @@ class _DBLoopRunner:
             engine = create_async_engine(
                 database_url,
                 echo=debug,
-                pool_size=10,
-                max_overflow=5,
+                pool_size=settings.DB_POOL_SIZE,
+                max_overflow=settings.DB_MAX_OVERFLOW,
                 pool_recycle=3600,
                 pool_pre_ping=True,
                 connect_args={"connect_timeout": 5},

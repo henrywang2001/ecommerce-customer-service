@@ -34,13 +34,13 @@ from app.services.rag_service import rag_service
 from app.services.llm_service import llm_service
 from app.services.observe_service import observe
 from app.agents.customer_agent import CustomerServiceAgent
+from app.core.config import settings
 from app.utils.cache import cache as _redis_cache  # 复用既有 Redis 封装，不再单独开连接
 
 logger = logging.getLogger(__name__)
 
-# 会话生命周期治理（M1）：容量上限 + 空闲 TTL
-MAX_SESSIONS: int = 200
-SESSION_TTL_SECONDS: int = 86400  # 24 小时
+# 会话生命周期治理（M1）：容量上限 + 空闲 TTL（参数已收口至 config.py）
+# SESSION_MAX_COUNT / SESSION_TTL / HISTORY_TURNS 见 app.core.config.settings
 REDIS_SESSION_PREFIX: str = "session:"
 
 # 默认 Agent 构造路径（CustomerServiceAgent），供 SessionManager / ChatService 默认注入
@@ -127,7 +127,7 @@ class SessionManager:
         await _redis_cache.set(
             REDIS_SESSION_PREFIX + ctx.meta["session_id"],
             ctx.to_payload(),
-            expire=SESSION_TTL_SECONDS,
+            expire=settings.SESSION_TTL,
         )
 
     def _touch_index(self, sid: str) -> None:
@@ -145,7 +145,7 @@ class SessionManager:
         now = time.time()
         expired = [
             s for s, t in self._index.items()
-            if s != exclude and (now - t) > SESSION_TTL_SECONDS
+            if s != exclude and (now - t) > settings.SESSION_TTL
         ]
         for s in expired:
             self._index.pop(s, None)
@@ -153,8 +153,8 @@ class SessionManager:
             await self._async_delete(s)
 
     async def _evict_lru(self) -> None:
-        """容量上限：超过 MAX_SESSIONS 时按最旧活动淘汰。"""
-        while len(self._index) > MAX_SESSIONS:
+        """容量上限：超过 SESSION_MAX_COUNT 时按最旧活动淘汰。"""
+        while len(self._index) > settings.SESSION_MAX_COUNT:
             oldest, _ = self._index.popitem(last=False)
             logger.info(f"会话因超过容量上限已淘汰(LRU): {oldest}")
             await self._async_delete(oldest)
@@ -388,12 +388,12 @@ class _LlmHandler(IntentHandler):
     handler_type = "llm"
 
     async def _build_messages(self, svc: "ChatService", ctx: HandlerContext) -> List[Dict[str, str]]:
-        # 读取最近 3 轮对话（B5：存储的每条消息含 intent/sentiment 等额外字段，
+        # 读取最近 HISTORY_TURNS 轮对话（B5：存储的每条消息含 intent/sentiment 等额外字段，
         # 发送给 LLM 时必须映射为纯 {role, content}，避免多余字段污染输入）。
         history = await svc.session_manager.get_conversation(ctx.session_id)
         clean_history = [
             {"role": m["role"], "content": m["content"]}
-            for m in history[-6:]
+            for m in history[-settings.HISTORY_TURNS:]
         ]
         return [
             {"role": "system", "content": svc._get_system_prompt()},

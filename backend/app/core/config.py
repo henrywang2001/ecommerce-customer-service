@@ -72,6 +72,21 @@ class Settings(BaseSettings):
     # 意图识别配置
     INTENT_THRESHOLD: float = 0.6
 
+    # ── CQ-6：运行期参数收口（集中可配可观测，消除魔法数字）──
+    # 会话生命周期治理（M1）：容量上限 / 空闲 TTL / 历史轮数
+    SESSION_MAX_COUNT: int = 200   # 单实例最大会话数（超出按最旧 LRU 淘汰）
+    SESSION_TTL: int = 86400       # 会话空闲 TTL（秒），默认 24h
+    HISTORY_TURNS: int = 6         # 送给 LLM 的对话历史轮数上限
+    # 数据库连线池（原 database.py 20/10 与 user_service.py 10/5 不一致，统一收口）
+    DB_POOL_SIZE: int = 20
+    DB_MAX_OVERFLOW: int = 10
+    # RAG 关键词召回计分权重（rag_service._keyword_search）
+    INTENT_KEYWORD_WEIGHTS: dict = {
+        "explicit": 0.4,   # 显式关键词子串命中 / 个
+        "token": 0.8,      # 问题分词命中（按命中比例）
+        "category": 0.5,   # 分类子串命中
+    }
+
     # 上游 LLM/Embedding 弹性配置（P4）
     UPSTREAM_LLM_MAX_CONCURRENCY: int = 20
     UPSTREAM_EMBEDDING_MAX_CONCURRENCY: int = 20
@@ -172,6 +187,31 @@ class Settings(BaseSettings):
     def _check_port(cls, v: int) -> int:
         if not (1 <= v <= 65535):
             raise ValueError("PORT 必须在 [1, 65535]")
+        return v
+
+    # ── CQ-6：会话/连接池/关键词权重 区间校验 ──
+    @field_validator("SESSION_MAX_COUNT", "SESSION_TTL", "HISTORY_TURNS", "DB_POOL_SIZE")
+    @classmethod
+    def _check_positive_int_cq6(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("会话/连接池容量参数必须 >= 1")
+        return v
+
+    @field_validator("DB_MAX_OVERFLOW")
+    @classmethod
+    def _check_overflow(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("DB_MAX_OVERFLOW 必须 >= 0")
+        return v
+
+    @field_validator("INTENT_KEYWORD_WEIGHTS")
+    @classmethod
+    def _check_kw_weights(cls, v: dict) -> dict:
+        for k in ("explicit", "token", "category"):
+            if k not in v:
+                raise ValueError(f"INTENT_KEYWORD_WEIGHTS 缺少键 {k}")
+            if not isinstance(v[k], (int, float)) or v[k] < 0:
+                raise ValueError(f"INTENT_KEYWORD_WEIGHTS[{k}] 必须 >= 0")
         return v
 
     # ── MN-7a：生产环境（DEBUG=False）必须配置密钥，缺失即启动失败 ──

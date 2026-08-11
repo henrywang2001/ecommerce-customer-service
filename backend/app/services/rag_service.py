@@ -11,6 +11,7 @@ from app.services.observe_service import observe
 from app.rag.vector_store import vector_store
 from app.rag.chroma_client import invalidate_collection_cache
 from app.utils.cache import cache as _default_cache
+from app.core.config import settings
 
 # 默认注入的向量存储单例（AR-5：向量计分已收口到 VectorStore.search，rag_service 仅做合并）
 _default_vector_store = vector_store
@@ -339,10 +340,10 @@ class RAGService:
     def _keyword_search(self, query: str, top_k: int, filters: Optional[Dict] = None) -> List[Dict[str, Any]]:
         """基于关键词的内置知识库检索（PF-6：改查 resident 倒排索引，与原实现等价）
 
-        召回与计分逻辑与原实现完全一致：
-        - 关键词（显式）子串命中 → +0.4 / 个；
-        - 问题分词命中 → +0.8 * (命中查询词数 / 查询词总数)；
-        - 分类子串命中 → +0.5；
+        召回与计分逻辑与原实现完全一致，计分权重收口至 config.INTENT_KEYWORD_WEIGHTS：
+        - 关键词（显式）子串命中 → +INTENT_KEYWORD_WEIGHTS["explicit"] / 个；
+        - 问题分词命中 → +INTENT_KEYWORD_WEIGHTS["token"] * (命中查询词数 / 查询词总数)；
+        - 分类子串命中 → +INTENT_KEYWORD_WEIGHTS["category"]；
         - 最终 score 截断到 [0,1]；按分数降序返回 top_k。
         区别在于：问题的分词在启动时已预置进 _KEYWORD_INDEX，本方法只查索引，
         不再对整库做逐文档分词。
@@ -361,17 +362,17 @@ class RAGService:
             if filters and filters.get("category") and doc["category"] != filters["category"]:
                 continue
             score = 0.0
-            # 显式关键词子串匹配（原：kw in query_lower → +0.4）
+            # 显式关键词子串匹配（+ INTENT_KEYWORD_WEIGHTS["explicit"] / 个）
             for kw in doc["keywords_list"]:
                 if kw and kw in query_lower:
-                    score += 0.4
-            # 问题分词命中（原：0.8 * hit / len(q_token_set)）
+                    score += settings.INTENT_KEYWORD_WEIGHTS["explicit"]
+            # 问题分词命中（+ INTENT_KEYWORD_WEIGHTS["token"] * hit / 总数）
             if q_token_set:
                 hit = hit_counts.get(i, 0)
-                score += 0.8 * (hit / len(q_token_set))
-            # 分类命中（原：category_text in query_lower → +0.5）
+                score += settings.INTENT_KEYWORD_WEIGHTS["token"] * (hit / len(q_token_set))
+            # 分类命中（+ INTENT_KEYWORD_WEIGHTS["category"]）
             if doc["category_text"] and doc["category_text"] in query_lower:
-                score += 0.5
+                score += settings.INTENT_KEYWORD_WEIGHTS["category"]
             if score > 0:
                 item = {
                     "id": doc["id"],
