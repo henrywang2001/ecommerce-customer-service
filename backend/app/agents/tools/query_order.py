@@ -4,6 +4,7 @@ import re
 import logging
 
 from app.data.mock_data import ORDERS
+from app.agents.tools.registry import BaseTool, tool
 
 logger = logging.getLogger(__name__)
 
@@ -11,13 +12,13 @@ logger = logging.getLogger(__name__)
 MOCK_ORDERS = ORDERS
 
 
-class QueryOrderTool:
+@tool("query_order", triggers=["order_query"], requires_auth=True,
+      description="查询用户订单状态、物流信息、收货地址等")
+class QueryOrderTool(BaseTool):
     """订单查询工具"""
 
     def __init__(self):
-        self.name = "query_order"
-        self.description = "查询用户订单状态、物流信息、收货地址等"
-        self.requires_auth = True
+        super().__init__()
 
     async def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
         user_message = params.get("user_message", "")

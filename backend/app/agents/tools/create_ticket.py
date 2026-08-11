@@ -4,16 +4,18 @@ import random
 import time
 import logging
 
+from app.agents.tools.registry import BaseTool, tool
+
 logger = logging.getLogger(__name__)
 
 
-class CreateTicketTool:
+@tool("create_ticket", triggers=["ticket_create"], requires_auth=True,
+      description="创建客服工单，记录用户问题和反馈")
+class CreateTicketTool(BaseTool):
     """创建客服工单"""
 
     def __init__(self):
-        self.name = "create_ticket"
-        self.description = "创建客服工单，记录用户问题和反馈"
-        self.requires_auth = True
+        super().__init__()
 
     async def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
         session_id = params.get("session_id", "")

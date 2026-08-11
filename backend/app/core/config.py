@@ -60,6 +60,12 @@ class Settings(BaseSettings):
     CHROMA_PERSIST_DIR: str = os.path.join(_backend_dir, "chroma_db")
     CHROMA_COLLECTION: str = "knowledge_base"
 
+    # ── Provider 抽象层（EX-3）厂商选择 ──
+    # 值为小写厂商标识；工厂函数 get_*_provider() 据此选择具体实现，未知值回退默认。
+    LLM_PROVIDER: str = "deepseek"
+    EMBEDDING_PROVIDER: str = "dashscope"
+    VECTORSTORE_PROVIDER: str = "chroma"
+
     # RAG 配置
     RAG_TOP_K: int = 5
 

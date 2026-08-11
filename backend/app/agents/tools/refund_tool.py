@@ -3,16 +3,18 @@ from typing import Dict, Any, Optional
 import re
 import logging
 
+from app.agents.tools.registry import BaseTool, tool
+
 logger = logging.getLogger(__name__)
 
 
-class RefundTool:
+@tool("refund", triggers=["refund_request"], requires_auth=True,
+      description="处理退款退货申请、取消订单、查询退款进度")
+class RefundTool(BaseTool):
     """退款退货处理工具"""
 
     def __init__(self):
-        self.name = "refund"
-        self.description = "处理退款退货申请、取消订单、查询退款进度"
-        self.requires_auth = True
+        super().__init__()
 
     async def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
         user_message = params.get("user_message", "")

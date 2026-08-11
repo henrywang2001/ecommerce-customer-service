@@ -4,16 +4,27 @@ import random
 import time
 import logging
 
+from app.agents.tools.registry import BaseTool, tool
+
 logger = logging.getLogger(__name__)
 
 
-class TransferHumanTool:
+@tool("transfer_human", triggers=["human_agent", "complaint"], requires_auth=False,
+      description="将用户转接给人工客服，处理复杂问题")
+class TransferHumanTool(BaseTool):
     """转人工客服工具"""
 
     def __init__(self):
-        self.name = "transfer_human"
-        self.description = "将用户转接给人工客服，处理复杂问题"
-        self.requires_auth = False
+        super().__init__()
+
+    @staticmethod
+    def _is_complaint(reason: str) -> bool:
+        """投诉判定：精确匹配或包含『投诉』。
+
+        显式抽成方法，规避 ``if reason == "投诉" or "投诉"`` 这类把常量字符串当成
+        恒真条件的陷阱，意图一目了然、易测试。
+        """
+        return bool(reason) and (reason == "投诉" or "投诉" in reason)
 
     async def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
         session_id = params.get("session_id", "")
@@ -42,7 +53,7 @@ class TransferHumanTool:
             }
 
     def _generate_transfer_message(self, reason: str, position: int, wait_time: int) -> str:
-        if reason == "投诉" or "投诉" in reason:
+        if self._is_complaint(reason):
             return (
                 f"😔 非常抱歉给您带来不好的体验\n\n"
                 f"已为您优先转接专业投诉处理专员\n"

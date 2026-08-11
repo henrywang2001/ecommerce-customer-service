@@ -6,12 +6,13 @@ from app.core.config import settings
 from app.services.observe_service import observe
 from app.utils.http_client import get_http_client
 from app.utils.outbound import post_with_resilience, embedding_semaphore, embedding_breaker
+from app.services.providers.base import EmbeddingProvider
 
 logger = logging.getLogger(__name__)
 
 
-class EmbeddingService:
-    """向量嵌入服务 — 千问 DashScope"""
+class EmbeddingService(EmbeddingProvider):
+    """向量嵌入服务 — 千问 DashScope（EX-3: 即 EmbeddingProvider 的 DashScope 具体实现）"""
 
     def __init__(self):
         self.api_key = settings.EMBEDDING_API_KEY

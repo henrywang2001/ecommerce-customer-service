@@ -3,6 +3,7 @@ from typing import Dict, Any, List
 import logging
 
 from app.data.mock_data import PRODUCTS
+from app.agents.tools.registry import BaseTool, tool
 
 logger = logging.getLogger(__name__)
 
@@ -18,13 +19,13 @@ CATEGORY_KEYWORDS = [
 ]
 
 
-class QueryProductTool:
+@tool("query_product", triggers=["product_inquiry"], requires_auth=False,
+      description="搜索商品信息、查询库存、价格和促销活动")
+class QueryProductTool(BaseTool):
     """商品查询工具"""
 
     def __init__(self):
-        self.name = "query_product"
-        self.description = "搜索商品信息、查询库存、价格和促销活动"
-        self.requires_auth = False
+        super().__init__()
 
     async def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
         user_message = params.get("user_message", "")

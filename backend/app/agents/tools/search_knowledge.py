@@ -2,17 +2,18 @@
 from typing import Dict, Any, List
 import logging
 from app.services.rag_service import rag_service
+from app.agents.tools.registry import BaseTool, tool
 
 logger = logging.getLogger(__name__)
 
 
-class SearchKnowledgeTool:
+@tool("search_knowledge", triggers=[], requires_auth=False,
+      description="从知识库中检索商品信息、平台政策、常见问题等")
+class SearchKnowledgeTool(BaseTool):
     """从知识库检索相关信息"""
 
     def __init__(self):
-        self.name = "search_knowledge"
-        self.description = "从知识库中检索商品信息、平台政策、常见问题等"
-        self.requires_auth = False
+        super().__init__()
 
     async def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
         user_message = params.get("user_message", "")

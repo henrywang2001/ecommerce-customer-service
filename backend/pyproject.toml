@@ -11,3 +11,6 @@ requires-python = ">=3.10"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "integration: 集成测试（依赖 Redis/外部组件，可用 fakeredis 等内存替身运行）",
+]

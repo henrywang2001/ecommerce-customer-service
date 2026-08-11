@@ -15,20 +15,21 @@ class CustomerServiceAgent(BaseAgent):
         self._init_tools()
 
     def _init_tools(self):
-        """初始化工具集"""
-        from app.agents.tools.search_knowledge import SearchKnowledgeTool
-        from app.agents.tools.query_order import QueryOrderTool
-        from app.agents.tools.query_product import QueryProductTool
-        from app.agents.tools.refund_tool import RefundTool
-        from app.agents.tools.transfer_human import TransferHumanTool
-        from app.agents.tools.create_ticket import CreateTicketTool
+        """初始化工具集 — 扫描工具注册表自动注册（EX-2）。
 
-        self.register_tool("search_knowledge", SearchKnowledgeTool())
-        self.register_tool("query_order", QueryOrderTool())
-        self.register_tool("query_product", QueryProductTool())
-        self.register_tool("refund", RefundTool())
-        self.register_tool("transfer_human", TransferHumanTool())
-        self.register_tool("create_ticket", CreateTicketTool())
+        新增工具只需在 app/agents/tools 下用 ``@tool`` 注册，无需改动此处；
+        注册表为单一事实来源（见 app/agents/tools/registry.py）。
+        """
+        from app.agents.tools import registry as _reg
+        # 触发所有工具模块的类定义（@tool 注册发生在 import 时）
+        from app.agents.tools import (  # noqa: F401
+            search_knowledge, query_order, query_product,
+            refund_tool, transfer_human, create_ticket,
+        )
+        for cls in _reg.get_all_tool_classes():
+            meta = getattr(cls, "_tool_meta", None)
+            name = meta.name if meta is not None else getattr(cls, "name", cls.__name__)
+            self.register_tool(name, cls())
 
     async def execute_tool(self, tool_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
         """执行指定工具 — Langfuse tool 追踪"""
@@ -70,3 +71,31 @@ class CustomerServiceAgent(BaseAgent):
                         level="ERROR",
                     )
                 return {"success": False, "response": f"工具执行失败: {str(e)}"}
+
+    async def dispatch_intent(
+        self,
+        intent_code: str,
+        content: str,
+        user_id: Optional[int] = None,
+        session_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """注册表驱动的意图路由：intent_code → 注册表 → execute(params)（EX-2）。
+
+        ``chat_service`` 仍保留其 ``_TOOL_MAP``（解析到同一批工具名）以兼容既有路由；
+        本方法提供「意图编码直达工具」的注册表单一路径，新增意图只需在对应工具的
+        ``@tool(triggers=[...])`` 中声明触发词即可，无需改动调度代码。
+        """
+        from app.agents.tools import registry as _reg
+
+        tool_name = _reg.get_tool_name_for_intent(intent_code)
+        if tool_name is None:
+            return {
+                "success": False,
+                "response": f"未找到意图 [{intent_code}] 对应的工具",
+            }
+        params: Dict[str, Any] = {
+            "user_message": content,
+            "user_id": user_id if user_id is not None else self.user_id,
+            "session_id": session_id if session_id is not None else self.session_id,
+        }
+        return await self.execute_tool(tool_name, params)

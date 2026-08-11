@@ -10,12 +10,13 @@ from app.utils.outbound import (
     post_with_resilience, stream_post,
     llm_semaphore, llm_breaker,
 )
+from app.services.providers.base import LLMProvider
 
 logger = logging.getLogger(__name__)
 
 
-class LLMService:
-    """大语言模型服务 — DeepSeek"""
+class LLMService(LLMProvider):
+    """大语言模型服务 — DeepSeek（EX-3: 即 LLMProvider 的 DeepSeek 具体实现）"""
 
     def __init__(self, client=None):
         self.api_key = settings.LLM_API_KEY
