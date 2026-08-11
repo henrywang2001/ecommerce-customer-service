@@ -1,6 +1,7 @@
 """RAG 检索增强生成服务（集成 Langfuse 追踪）"""
 from typing import List, Dict, Any, Optional
 import asyncio
+import json
 import logging
 import re
 import hashlib
@@ -15,6 +16,51 @@ logger = logging.getLogger(__name__)
 
 # 知识库写操作异步锁（防御并发修改全局 BUILT_IN_KNOWLEDGE）
 _kb_lock = asyncio.Lock()
+
+# ── PF-1：KB 版本号命名空间（主动失效）──
+# 知识库发生写操作（add/delete_document）时自增版本号，使检索/embedding 缓存键随版本变化，
+# 旧版本缓存键自然 orphan（不再命中），下次检索必走实时计算，根治「快但旧」。
+# 单 worker 模型下用进程内计数器即可（MN-6 约束：A1 落地前 Docker 维持单副本）。
+KB_VERSION = 0
+
+
+def _bump_kb_version() -> int:
+    """知识库写操作后调用：自增版本号，返回新版本。"""
+    global KB_VERSION
+    KB_VERSION += 1
+    return KB_VERSION
+
+
+def get_kb_version() -> int:
+    """测试 / 可观测用：读取当前版本号。"""
+    return KB_VERSION
+
+
+def _normalize_query(q: str) -> str:
+    """PF-5：查询归一化（lower + 去全部空白 + 去标点），使同义问法命中同一缓存键。
+
+    空白对 RAG 检索缓存无语义价值（中文本无空白；英文合并亦可提升命中率），
+    故直接去除而非仅压缩；标点同样去除。注意：仅用于缓存键，embedding 仍用原始 query。
+    """
+    q = (q or "").lower()
+    q = re.sub(r"\s+", "", q)
+    q = re.sub(r"[^\w\u4e00-\u9fff]", "", q)
+    return q
+
+
+def _filters_key(filters: Optional[Dict]) -> str:
+    """PF-5：filters 稳定序列化（按 key 排序），避免 dict 顺序差异导致缓存未命中。"""
+    if not filters:
+        return ""
+    return json.dumps(filters, sort_keys=True, ensure_ascii=False)
+
+
+def _make_res_key(query: str, top_k: int, filters: Optional[Dict]) -> str:
+    return f"rag:res:{KB_VERSION}:{_normalize_query(query)}:{top_k}:{_filters_key(filters)}"
+
+
+def _make_emb_key(query: str) -> str:
+    return f"rag:emb:{KB_VERSION}:{_normalize_query(query)}"
 
 # 内置知识库内容（Mock 数据，实际项目中使用 ChromaDB）
 BUILT_IN_KNOWLEDGE: List[Dict[str, Any]] = [
@@ -156,8 +202,9 @@ class RAGService:
             name="rag-search",
             input={"query": query, "top_k": top_k, "filters": filters},
         ) as ret:
-            # ── P5: 结果缓存（命中则跳过 embedding + 检索，仅做缓存命中追踪后返回）──
-            res_key = f"rag:res:{query}:{top_k}:{filters}"
+            # ── PF-1/PF-5: 结果缓存（命中则跳过 embedding + 检索，仅做缓存命中追踪后返回）──
+            # 键含 KB 版本号（写操作自增）+ 归一化查询 + 稳定 filters，天然支持主动失效
+            res_key = _make_res_key(query, top_k, filters)
             cached = await cache.get(res_key)
             if cached:
                 if ret is not None:
@@ -175,11 +222,13 @@ class RAGService:
             chroma = await self._get_chroma()
             # 检测零向量：embedding 不可用时（返回全 0 向量）不再做向量检索，避免污染结果
             if chroma is not None:
-                # ── P5: embedding 缓存（命中则跳过远程 embedding 调用）──
-                query_embedding = await cache.get(f"rag:emb:{query}")
+                # ── PF-1/PF-5: embedding 缓存（命中则跳过远程 embedding 调用）──
+                # 键含 KB 版本号 + 归一化查询；知识库变更后旧版本 embedding 键自动 orphan
+                emb_key = _make_emb_key(query)
+                query_embedding = await cache.get(emb_key)
                 if query_embedding is None:
                     query_embedding = await embedding_service.encode_single(query)
-                    await cache.set(f"rag:emb:{query}", query_embedding, expire=3600)
+                    await cache.set(emb_key, query_embedding, expire=3600)
                 is_zero = all(v == 0.0 for v in query_embedding)
             else:
                 is_zero = False
@@ -404,6 +453,8 @@ class RAGService:
             finally:
                 # P10：文档增减后使「是否非空」缓存失效
                 invalidate_collection_cache()
+                # PF-1：知识库写操作自增版本号，使检索/embedding 缓存键主动失效（根治「快但旧」）
+                _bump_kb_version()
 
         # 同时加到内置库（加锁保证写操作并发安全）
         async with _kb_lock:
@@ -447,6 +498,8 @@ class RAGService:
         finally:
             # P10：文档增减后使「是否非空」缓存失效
             invalidate_collection_cache()
+            # PF-1：知识库写操作自增版本号，使检索/embedding 缓存键主动失效（根治「快但旧」）
+            _bump_kb_version()
         async with _kb_lock:
             BUILT_IN_KNOWLEDGE = [k for k in BUILT_IN_KNOWLEDGE if k.get("id") != knowledge_id]
         return True
