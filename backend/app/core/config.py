@@ -1,5 +1,6 @@
 """应用配置模块 - 使用 Pydantic Settings 管理环境变量"""
 from pydantic_settings import BaseSettings
+from pydantic import field_validator, model_validator
 from typing import List
 import os
 
@@ -92,6 +93,100 @@ class Settings(BaseSettings):
     LANGFUSE_SAMPLE_RATE: float = 1.0
     LANGFUSE_ENVIRONMENT: str = "development"
     LANGFUSE_RELEASE: str = "1.0.0"
+
+    # ── MN-1b：阈值合理区间校验（启动即暴露异常配置，杜绝“改一处忘另一处”）──
+    @field_validator("INTENT_THRESHOLD")
+    @classmethod
+    def _check_intent_threshold(cls, v: float) -> float:
+        if not (0.0 < v <= 1.0):
+            raise ValueError("INTENT_THRESHOLD 必须在 (0, 1] 区间")
+        return v
+
+    @field_validator("RAG_TOP_K")
+    @classmethod
+    def _check_rag_top_k(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("RAG_TOP_K 必须 >= 1")
+        return v
+
+    @field_validator("LLM_TEMPERATURE")
+    @classmethod
+    def _check_llm_temperature(cls, v: float) -> float:
+        if not (0.0 <= v <= 2.0):
+            raise ValueError("LLM_TEMPERATURE 必须在 [0, 2] 区间")
+        return v
+
+    @field_validator("ACCESS_TOKEN_EXPIRE_MINUTES")
+    @classmethod
+    def _check_token_expire(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("ACCESS_TOKEN_EXPIRE_MINUTES 必须 >= 1")
+        return v
+
+    @field_validator("EMBEDDING_DIMENSION")
+    @classmethod
+    def _check_embed_dim(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("EMBEDDING_DIMENSION 必须 > 0")
+        return v
+
+    @field_validator(
+        "UPSTREAM_LLM_MAX_CONCURRENCY",
+        "UPSTREAM_EMBEDDING_MAX_CONCURRENCY",
+        "UPSTREAM_MAX_RETRIES",
+        "RATE_LIMIT_HEAVY_MAX_REQUESTS",
+    )
+    @classmethod
+    def _check_positive_int(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("并发/重试/限流参数必须 >= 1")
+        return v
+
+    @field_validator(
+        "UPSTREAM_RETRY_BASE_DELAY",
+        "UPSTREAM_RETRY_MAX_DELAY",
+        "UPSTREAM_LLM_CB_COOLDOWN",
+        "UPSTREAM_EMBEDDING_CB_COOLDOWN",
+    )
+    @classmethod
+    def _check_nonneg_float(cls, v: float) -> float:
+        if v < 0:
+            raise ValueError("退避/冷却参数必须 >= 0")
+        return v
+
+    @field_validator("LANGFUSE_SAMPLE_RATE")
+    @classmethod
+    def _check_sample_rate(cls, v: float) -> float:
+        if not (0.0 <= v <= 1.0):
+            raise ValueError("LANGFUSE_SAMPLE_RATE 必须在 [0, 1] 区间")
+        return v
+
+    @field_validator("PORT")
+    @classmethod
+    def _check_port(cls, v: int) -> int:
+        if not (1 <= v <= 65535):
+            raise ValueError("PORT 必须在 [1, 65535]")
+        return v
+
+    # ── MN-7a：生产环境（DEBUG=False）必须配置密钥，缺失即启动失败 ──
+    # 开发环境（DEBUG=True）保留 B2 的占位密钥自动随机化便利，不强制。
+    @model_validator(mode="after")
+    def _enforce_prod_secrets(self):
+        if self.DEBUG:
+            return self
+        if not self.LLM_API_KEY:
+            raise ValueError("生产环境(DEBUG=False)必须配置 LLM_API_KEY")
+        if not self.EMBEDDING_API_KEY:
+            raise ValueError("生产环境(DEBUG=False)必须配置 EMBEDDING_API_KEY")
+        if (
+            self.SECRET_KEY in _PLACEHOLDER_SECRETS
+            or "change-in-production" in self.SECRET_KEY
+            or "change-me" in self.SECRET_KEY
+        ):
+            raise ValueError(
+                "生产环境(DEBUG=False) SECRET_KEY 不能使用占位值，请在 .env 配置固定随机密钥"
+            )
+        return self
 
     class Config:
         env_file = _env_file
