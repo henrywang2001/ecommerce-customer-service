@@ -9,6 +9,7 @@ python-multipart==0.0.9
 sqlalchemy[asyncio]==2.0.25
 aiomysql==0.2.0
 pymysql==1.1.0
+aiosqlite>=0.19.0  # SQLite 异步驱动：本地回退 / 测试（落库与持久化测试依赖）
 redis==5.0.1
 
 # 向量数据库（可选）
