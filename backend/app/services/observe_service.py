@@ -196,27 +196,6 @@ class ObserveService:
             yield ret_ctx
 
     @contextmanager
-    def agent(
-        self,
-        name: str,
-        input: Any = None,
-    ):
-        """创建一个 agent 类型的观测节点
-
-        用于追踪 Agent 决策/执行过程 (CustomerServiceAgent.process)。
-        """
-        if not self.enabled:
-            yield None
-            return
-
-        with self._client.start_as_current_observation(
-            name=name,
-            as_type="agent",
-            input=input,
-        ) as agent_ctx:
-            yield agent_ctx
-
-    @contextmanager
     def embedding(
         self,
         name: str,
@@ -238,51 +217,6 @@ class ObserveService:
             input=input,
         ) as emb_ctx:
             yield emb_ctx
-
-    # ── 手动 API（用于异步场景需要显式控制的场合）───────────────
-
-    def start_span(self, name: str, input: Any = None) -> Any:
-        """手动创建 span（需显式调用 .end()）"""
-        if not self.enabled:
-            return _NoopSpan()
-        return self._client.start_observation(
-            name=name, as_type="span", input=input
-        )
-
-    def start_generation(
-        self,
-        name: str,
-        model: str,
-        input: Any = None,
-        model_parameters: Optional[Dict[str, Any]] = None,
-    ) -> Any:
-        """手动创建 generation（需显式调用 .end()）"""
-        if not self.enabled:
-            return _NoopSpan()
-        return self._client.start_observation(
-            name=name,
-            as_type="generation",
-            model=model,
-            input=input,
-            model_parameters=model_parameters,
-        )
-
-
-class _NoopSpan:
-    """空 Span — 当 Langfuse 未启用时返回，所有操作均为 no-op"""
-
-    def update(self, **kwargs: Any) -> None:
-        pass
-
-    def end(self) -> None:
-        pass
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args: Any) -> None:
-        pass
-
 
 # 全局单例
 observe = ObserveService()

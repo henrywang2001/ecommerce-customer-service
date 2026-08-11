@@ -32,7 +32,6 @@ class Settings(BaseSettings):
 
     # 数据库配置
     DATABASE_URL: str = "mysql+aiomysql://root:123456@localhost:3306/ecommerce_cs?charset=utf8mb4"
-    DATABASE_URL_SYNC: str = "mysql+pymysql://root:123456@localhost:3306/ecommerce_cs?charset=utf8mb4"
 
     # Redis 配置
     REDIS_URL: str = "redis://localhost:6379/0"
@@ -62,17 +61,9 @@ class Settings(BaseSettings):
 
     # RAG 配置
     RAG_TOP_K: int = 5
-    RAG_SIMILARITY_THRESHOLD: float = 0.7
-    RAG_MAX_CONTEXT_LENGTH: int = 4000
-
-    # Agent 配置
-    AGENT_NAME: str = "小e"
-    AGENT_MAX_ITERATIONS: int = 5
-    AGENT_TIMEOUT_SECONDS: int = 30
 
     # 意图识别配置
     INTENT_THRESHOLD: float = 0.6
-    INTENT_FALLBACK_CONFIDENCE: float = 0.4
 
     # 上游 LLM/Embedding 弹性配置（P4）
     UPSTREAM_LLM_MAX_CONCURRENCY: int = 20
@@ -85,11 +76,6 @@ class Settings(BaseSettings):
     UPSTREAM_EMBEDDING_CB_FAILURES: int = 5
     UPSTREAM_EMBEDDING_CB_COOLDOWN: float = 30.0
     RATE_LIMIT_HEAVY_MAX_REQUESTS: int = 30  # 昂贵接口（/send、/send_stream、/agent/process）每分钟上限
-
-    # 转人工策略
-    AUTO_TRANSFER_ON_COMPLAINT: bool = True
-    AUTO_TRANSFER_ON_NEGATIVE: bool = True
-    AUTO_TRANSFER_THRESHOLD: float = -0.5
 
     # 日志配置 (B9: 日志目录默认绝对路径)
     LOG_LEVEL: str = "INFO"

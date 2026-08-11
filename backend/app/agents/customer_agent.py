@@ -30,14 +30,6 @@ class CustomerServiceAgent(BaseAgent):
         self.register_tool("transfer_human", TransferHumanTool())
         self.register_tool("create_ticket", CreateTicketTool())
 
-    async def process(self, input_text: str) -> str:
-        """处理用户输入（基础 ReAct 循环）"""
-        self.add_to_history("user", input_text)
-
-        # 注意：完整的 ReAct 循环在 chat_service 中实现
-        # 这里提供一个简化的单轮处理入口
-        return f"Agent {self.agent_id} 已收到消息: {input_text[:50]}..."
-
     async def execute_tool(self, tool_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
         """执行指定工具 — Langfuse tool 追踪"""
         tool = self.get_tool(tool_name)

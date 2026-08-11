@@ -196,11 +196,6 @@ class IntentService:
 
         return best_match
 
-    async def _semantic_match(self, text: str) -> Optional[IntentResult]:
-        """基于向量相似的语义匹配（预留）"""
-        # 可以用 embedding 做语义相似度匹配
-        return None
-
     def _normalize_intent_code(self, code: str, text: str) -> Optional[str]:
         """B8 修复：将 LLM 返回的（可能不在配置表中的）意图码归一为已知标准码。
 

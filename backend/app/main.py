@@ -148,18 +148,28 @@ async def auth_middleware(request: Request, call_next):
     - /docs 等文档路径仅在 DEBUG 下公开，生产环境强制鉴权。
     """
     path = request.url.path
-    if path in PUBLIC_PATHS or path in AUTH_ROUTES:
-        return await call_next(request)
-    if settings.DEBUG and path in DOCS_PATHS:
-        return await call_next(request)
 
-    # 解析令牌（无论是否开启鉴权都尝试解析，供业务层取 identity）
+    # 提前解析令牌（供 docs/鉴权分支与业务层统一使用）
     request.state.user = None
     auth = request.headers.get("Authorization", "")
     if auth.startswith("Bearer "):
         payload = decode_access_token(auth[len("Bearer "):])
         if payload:
             request.state.user = payload
+
+    if path in PUBLIC_PATHS or path in AUTH_ROUTES:
+        return await call_next(request)
+
+    if path in DOCS_PATHS:
+        if settings.DEBUG:
+            return await call_next(request)
+        # 生产环境：文档不公开，需有效令牌
+        if request.state.user:
+            return await call_next(request)
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "生产环境文档已关闭，请提供 Bearer 令牌访问。"},
+        )
 
     if settings.REQUIRE_AUTH and not request.state.user:
         return JSONResponse(status_code=401, content={"detail": "未认证或认证失效，请提供 Bearer 令牌。"})

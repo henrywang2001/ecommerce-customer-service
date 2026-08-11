@@ -13,7 +13,9 @@ from app.core.config import settings
 from app.services import embedding_service
 from app.services import intent_service
 from app.services import llm_service
+from app.services.observe_service import observe
 from app.schemas.intent import IntentResult
+from app.utils.cache import cache
 
 
 def _make_intent(code: str, handler_type: str, confidence: float = 0.9) -> IntentResult:
@@ -25,6 +27,23 @@ def _make_intent(code: str, handler_type: str, confidence: float = 0.9) -> Inten
         handler_type=handler_type,
         priority=5,
     )
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _isolate_external_env():
+    """将缓存强制走内存后端、关闭 Langfuse 追踪，使测试不依赖本机 Redis / 可观测环境。
+
+    在保留既有 embedding / llm / intent mock 的基础上追加隔离：
+    - cache 单例置 _redis=False → 即使本机有 Redis 也走 _MemoryBackend，不命中真实缓存；
+    - observe._ready=False → enabled 恒为 False，trace 全部 no-op，不依赖环境。
+    """
+    mp = pytest.MonkeyPatch()
+    # 强制 cache 单例走内存后端（即使本机有 Redis 也不命中真实缓存）
+    mp.setattr(cache, "_redis", False)
+    # 强制 observe 为 no-op：trace 不依赖环境，enabled 恒为 False
+    mp.setattr(observe, "_ready", False)
+    yield
+    mp.undo()
 
 
 @pytest.fixture

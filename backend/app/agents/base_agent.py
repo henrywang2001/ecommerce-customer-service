@@ -1,6 +1,6 @@
 """Agent 基类"""
-from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional, List
+from abc import ABC
+from typing import Any, Dict, Optional
 import uuid
 import logging
 from datetime import datetime
@@ -12,10 +12,13 @@ class BaseAgent(ABC):
     """Agent 基类
 
     提供 Agent 的基础能力：
-    - 会话管理
     - 工具注册
     - 状态追踪
-    - 历史记录
+    - 会话上下文由外部 SessionManager 持有，Agent 本身保持无状态
+
+    说明：原实现中的「会话历史管理」与抽象方法属于冗余伪抽象，
+    实际编排逻辑在 chat_service 中完成，无外部调用方。
+    此处已移除死代码，使 Agent 明确为「工具容器 + 无状态执行器」。
     """
 
     def __init__(self, session_id: str, user_id: Optional[int] = None):
@@ -24,7 +27,6 @@ class BaseAgent(ABC):
         self.agent_id = str(uuid.uuid4())
         self.state: Dict[str, Any] = {}
         self.tools: Dict[str, Any] = {}
-        self.conversation_history: List[Dict[str, str]] = []
         self.created_at = datetime.now().isoformat()
         logger.info(f"Agent {self.agent_id} 初始化，会话: {session_id}")
 
@@ -45,30 +47,6 @@ class BaseAgent(ABC):
         """获取状态"""
         return self.state.get(key, default)
 
-    def add_to_history(self, role: str, content: str) -> None:
-        """添加对话历史"""
-        self.conversation_history.append({
-            "role": role,
-            "content": content,
-            "timestamp": datetime.now().isoformat(),
-        })
-
-    def get_history(self, last_n: Optional[int] = None) -> List[Dict]:
-        """获取对话历史"""
-        if last_n is None:
-            return self.conversation_history
-        return self.conversation_history[-last_n:]
-
-    def clear_history(self) -> None:
-        """清空对话历史"""
-        self.conversation_history = []
-        logger.info(f"Agent {self.agent_id} 清空对话历史")
-
-    @abstractmethod
-    async def process(self, input_text: str) -> str:
-        """处理输入（子类必须实现）"""
-        pass
-
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
         return {
@@ -77,6 +55,5 @@ class BaseAgent(ABC):
             "user_id": self.user_id,
             "state": self.state,
             "tools": list(self.tools.keys()),
-            "history_count": len(self.conversation_history),
             "created_at": self.created_at,
         }
