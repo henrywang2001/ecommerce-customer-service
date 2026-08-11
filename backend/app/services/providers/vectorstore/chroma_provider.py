@@ -1,8 +1,8 @@
-"""Chroma 向量库具体实现（EX-3）。
+"""Chroma 向量库具体实现。
 
 委派给现有 ``app.rag.vector_store.vector_store`` 单例，复用其全部 Chroma 逻辑
-（含 P7 单客户端锁竞争修复、P10 非空缓存、合并去重等），不重复实现，
-也不触碰 AR-5 正在改动的 ``VectorStore.search`` 计分逻辑——保持单一事实来源。
+（含 单客户端锁竞争修复、 非空缓存、合并去重等），不重复实现，
+也不触碰 正在改动的 ``VectorStore.search`` 计分逻辑——保持单一事实来源。
 
 follow-up: Milvus 等其它后端实现 ``VectorStoreProvider`` 即可热插拔。
 """

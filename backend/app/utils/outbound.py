@@ -1,4 +1,4 @@
-"""上游调用弹性层（P4）：并发信号量 + 指数退避重试 + 轻量熔断。
+"""上游调用弹性层：并发信号量 + 指数退避重试 + 轻量熔断。
 
 - Semaphore：限制对第三方 LLM/Embedding 的并发，避免突发流量打满对方配额/速率限制。
 - tenacity 重试：仅对 429 / 5xx / 传输错误重试（4xx 如 401/400 不重试）。
@@ -23,7 +23,7 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 
-# 并发配额（P4）
+# 并发配额
 llm_semaphore = asyncio.Semaphore(settings.UPSTREAM_LLM_MAX_CONCURRENCY)
 embedding_semaphore = asyncio.Semaphore(settings.UPSTREAM_EMBEDDING_MAX_CONCURRENCY)
 
@@ -67,7 +67,7 @@ class CircuitBreaker:
         """包裹「返回异步上下文管理器」的协程工厂（如 client.stream），提供熔断 fail-fast。
 
         与 call 不同：client.stream(...) 返回的是 async context manager（不可 await），
-        因此这里不 await cm_fn()，而是在进入 async with 前检查熔断状态；连接/流成功则
+        因此这里不 await cm_fn，而是在进入 async with 前检查熔断状态；连接/流成功则
         清零失败计数，异常则累加（保守）。长连接流本身不做 tenacity 重试。
         """
         async with self._lock:
@@ -124,13 +124,13 @@ async def _raw_post(client: httpx.AsyncClient, url: str, **kwargs):
 
 
 async def post_with_resilience(client, url, semaphore, breaker, **kwargs):
-    """带 并发信号量 + 熔断 + 指数退避重试 的上游 POST（P4）。"""
+    """带 并发信号量 + 熔断 + 指数退避重试 的上游 POST。"""
     async with semaphore:
         return await breaker.call(lambda: _raw_post(client, url, **kwargs))
 
 
 async def stream_post(client, url, semaphore, breaker, **kwargs):
-    """带 并发信号量 + 熔断 的上游流式 POST（P6）。
+    """带 并发信号量 + 熔断 的上游流式 POST。
 
     注意：长连接流不做 tenacity 整体重试（已半发送无法重放）；熔断通过 call_cm
     包裹 client.stream 的进入/退出阶段实现 fail-fast，连接建立失败会抛异常由

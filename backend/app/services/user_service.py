@@ -1,12 +1,12 @@
 """用户服务 — 数据库后端（MySQL/SQLite）+ 内存兜底。
 
-AR-3 / EX-5（M3）：注册/登录读写真实数据库（User 模型 + SQLAlchemy 异步会话）。
+/ ：注册/登录读写真实数据库（User 模型 + SQLAlchemy 异步会话）。
 当 DATABASE_URL 不可达时，回退到线程安全的内存用户表，保证服务不中断、请求不阻断。
 
 为什么用「独立后台事件循环线程」驱动异步 DB I/O：
     鉴权路由是 async def，运行在 FastAPI 的事件循环内，无法在其中调用 asyncio.run
     （会报 'event loop is already running'）；而在运行中的循环里用
-    run_until_complete / run_coroutine_threadsafe(...).result() 又会死锁。
+    run_until_complete / run_coroutine_threadsafe(...).result 又会死锁。
     因此这里用一个常驻后台线程持有独立事件循环来驱动所有异步 DB 操作，连接池
     固定绑定到该循环，避免跨循环复用连接导致的 'Event loop is closed'。
 内存字典仅作为 DATABASE_URL 不可达时的兜底（try DB first，失败 → 内存）。

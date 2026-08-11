@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 class EmbeddingService(EmbeddingProvider):
-    """向量嵌入服务 — 千问 DashScope（EX-3: 即 EmbeddingProvider 的 DashScope 具体实现）"""
+    """向量嵌入服务 — 千问 DashScope（: 即 EmbeddingProvider 的 DashScope 具体实现）"""
 
     def __init__(self):
         self.api_key = settings.EMBEDDING_API_KEY

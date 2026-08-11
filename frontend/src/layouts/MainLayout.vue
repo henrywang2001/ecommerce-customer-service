@@ -1,6 +1,6 @@
 <template>
   <div class="main-layout">
-    <!-- 左侧边栏（U1：会话侧边栏重构） -->
+    <!-- 左侧边栏（：会话侧边栏重构） -->
     <aside class="sidebar" :class="{ open: sidebarOpen }">
       <div class="sidebar-logo">
         <span class="logo-icon">🤖</span>
@@ -56,7 +56,7 @@
         </button>
       </nav>
 
-      <!-- 用户区（F6：登录态展示与退出） -->
+      <!-- 用户区（：登录态展示与退出） -->
       <div class="sidebar-user" v-if="authStore.user">
         <div class="user-meta">
           <span class="user-avatar">👤</span>
@@ -69,7 +69,7 @@
     <!-- 移动端遮罩：点击关闭抽屉 -->
     <div class="sidebar-backdrop" v-if="sidebarOpen" @click="sidebarOpen = false" aria-hidden="true"></div>
 
-    <!-- 右侧内容区：keep-alive 命中 ChatPage（F1 守卫） -->
+    <!-- 右侧内容区：keep-alive 命中 ChatPage（ 守卫） -->
     <main class="content">
       <router-view v-slot="{ Component }">
         <keep-alive include="ChatPage">
@@ -95,9 +95,9 @@ const sidebarOpen = ref(false)
 const themeStore = useThemeStore()
 
 onMounted(async () => {
-  // F6：用本地令牌恢复最新用户信息（刷新后保持登录态）
+  // ：用本地令牌恢复最新用户信息（刷新后保持登录态）
   await authStore.fetchMe()
-  // B1/F1：优先从本地缓存恢复最近会话与消息，命中则免后端调用
+  // ：优先从本地缓存恢复最近会话与消息，命中则免后端调用
   const restored = await chatStore.restoreFromLocal()
   if (!restored) {
     await chatStore.loadSessions()
@@ -116,7 +116,7 @@ async function onLogout() {
 }
 
 function sessionLabel(s: SessionInfo): string {
-  // 用 sessionId 片段做标签，避免裸 ID（F4）
+  // 用 sessionId 片段做标签，避免裸 ID
   return `会话 #${(s.sessionId || '').slice(-6).toUpperCase()}`
 }
 
@@ -272,7 +272,7 @@ async function handleNewChat() {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
-/* 触屏设备无 hover 态，删除按钮常驻可见（U9） */
+/* 触屏设备无 hover 态，删除按钮常驻可见 */
 @media (hover: none) {
   .session-del { opacity: 1; }
 }

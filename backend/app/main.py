@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 
 # ───────────────────────────────────────────────────────────────────────────
-# MN-4：请求级上下文（request_id / user_id）+ 一致性日志格式
+# ：请求级上下文（request_id / user_id）+ 一致性日志格式
 # ───────────────────────────────────────────────────────────────────────────
 request_id_var = contextvars.ContextVar("request_id", default="-")
 user_id_var = contextvars.ContextVar("user_id", default="-")
@@ -73,7 +73,7 @@ configure_logging()
 
 
 # ───────────────────────────────────────────────────────────────────────────
-# MN-3：可观测性指标（Prometheus）
+# ：可观测性指标（Prometheus）
 # ───────────────────────────────────────────────────────────────────────────
 HTTP_REQUEST_COUNT = Counter(
     "http_requests_total", "Total HTTP requests", ["method", "path", "status"]
@@ -157,14 +157,14 @@ async def lifespan(app: FastAPI):
 
     logger.info("应用启动完成")
 
-    # 预热共享 HTTP 连接池（P1）
+    # 预热共享 HTTP 连接池
     try:
         get_http_client()
         logger.info("共享 HTTP 连接池已就绪")
     except Exception as e:
         logger.warning(f"HTTP 连接池预热失败: {e}")
 
-    # ── PF-4：预热关键资源（后台任务，失败仅告警，绝不阻断启动）──
+    # ── ：预热关键资源（后台任务，失败仅告警，绝不阻断启动）──
     try:
         asyncio.create_task(_warmup())
         logger.info("预热任务已后台启动")
@@ -175,14 +175,14 @@ async def lifespan(app: FastAPI):
 
     logger.info("应用关闭中...")
 
-    # 关闭共享 HTTP 连接池（P1）
+    # 关闭共享 HTTP 连接池
     try:
         await close_http_client()
         logger.info("HTTP 连接池已关闭")
     except Exception as e:
         logger.warning(f"关闭 HTTP 连接池失败: {e}")
 
-    # ── MN-7b：优雅关闭 —— 显式释放 Redis 与 Chroma 客户端 ──
+    # ── ：优雅关闭 —— 显式释放 Redis 与 Chroma 客户端 ──
     try:
         r = await cache._get_redis()
         if r:  # 仅当已连接（truthy client）才关闭；None/False 表示本就未用 Redis
@@ -231,7 +231,7 @@ async def lifespan(app: FastAPI):
 
 
 async def _warmup() -> None:
-    """PF-4：预热 Chroma 客户端 + Embedding 编码 + 一次 RAG 检索。
+    """：预热 Chroma 客户端 + Embedding 编码 + 一次 RAG 检索。
 
     任何一步失败仅告警，绝不阻断启动；作为后台任务运行。
     """
@@ -298,7 +298,7 @@ async def ratelimit_middleware(request: Request, call_next):
     if path in PROBE_PATHS:
         return await call_next(request)
     client_ip = request.client.host if request.client else "anonymous"
-    # P4：昂贵接口（触发 LLM/Embedding 的重度路径）使用更严格的限流器
+    # ：昂贵接口（触发 LLM/Embedding 的重度路径）使用更严格的限流器
     heavy_paths = {"/api/v1/chat/send", "/api/v1/chat/send_stream", "/api/v1/agent/process"}
     limiter = heavy_rate_limiter if path in heavy_paths else rate_limiter
     if not await limiter.is_allowed(client_ip):
@@ -309,7 +309,7 @@ async def ratelimit_middleware(request: Request, call_next):
     return await call_next(request)
 
 
-# ── 全局鉴权中间件（B2：生产环境默认开启）──
+# ── 全局鉴权中间件（：生产环境默认开启）──
 # 永远公开：健康检查、根路径、认证路由（登录/注册本身不能要求鉴权）以及探针/指标
 PUBLIC_PATHS = {"/", "/health", "/healthz", "/readyz", "/metrics", "/stats"}
 AUTH_ROUTES = {"/api/v1/auth/login", "/api/v1/auth/register"}
@@ -355,7 +355,7 @@ async def auth_middleware(request: Request, call_next):
     return await call_next(request)
 
 
-# ── MN-3：请求指标中间件（记录每路由请求数 + 延迟直方图）──
+# ── ：请求指标中间件（记录每路由请求数 + 延迟直方图）──
 @app.middleware("http")
 async def metrics_middleware(request: Request, call_next):
     path = request.url.path
@@ -374,7 +374,7 @@ async def metrics_middleware(request: Request, call_next):
     return response
 
 
-# ── MN-4：请求 ID 中间件（最外层，最先执行；为全链路日志与追踪提供 request_id）──
+# ── ：请求 ID 中间件（最外层，最先执行；为全链路日志与追踪提供 request_id）──
 @app.middleware("http")
 async def request_id_middleware(request: Request, call_next):
     rid = request.headers.get("X-Request-ID") or uuid.uuid4().hex
@@ -404,7 +404,7 @@ async def root():
     }
 
 
-# ── MN-2：存活探针（liveness）——trivial 200，不检查任何依赖 ──
+# ── ：存活探针（liveness）——trivial 200，不检查任何依赖 ──
 @app.get("/healthz")
 async def healthz():
     return {"status": "alive", "version": settings.VERSION}
@@ -416,7 +416,7 @@ async def health_check():
     return {"status": "healthy", "version": settings.VERSION}
 
 
-# ── MN-2：就绪探针（readiness）——检查关键依赖，失败返回 503 + 各依赖状态 ──
+# ── ：就绪探针（readiness）——检查关键依赖，失败返回 503 + 各依赖状态 ──
 @app.get("/readyz")
 async def readyz():
     deps: dict = {}
@@ -449,13 +449,13 @@ async def readyz():
     return JSONResponse(status_code=200 if all_ok else 503, content=payload)
 
 
-# ── MN-3：Prometheus 指标端点 ──
+# ── ：Prometheus 指标端点 ──
 @app.get("/metrics")
 def metrics():
     return Response(generate_latest(REGISTRY), media_type=CONTENT_TYPE_LATEST)
 
 
-# ── MN-3：轻量 JSON 状态（/metrics 的降级/补充，无需 Prometheus 即可查看）──
+# ── ：轻量 JSON 状态（/metrics 的降级/补充，无需 Prometheus 即可查看）──
 @app.get("/stats")
 def stats():
     cache_stats = cache.stats()

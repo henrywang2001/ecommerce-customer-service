@@ -47,7 +47,7 @@ const router = createRouter({
   routes,
 })
 
-// F6：全局鉴权守卫 —— 非公开路由必须有 token，否则跳转登录页（携带 redirect）
+// ：全局鉴权守卫 —— 非公开路由必须有 token，否则跳转登录页（携带 redirect）
 router.beforeEach((to) => {
   const token = localStorage.getItem('token')
   if (!to.meta.public && !token) {

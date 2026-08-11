@@ -13,7 +13,7 @@ from app.rag.chroma_client import invalidate_collection_cache
 from app.utils.cache import cache as _default_cache
 from app.core.config import settings
 
-# 默认注入的向量存储单例（AR-5：向量计分已收口到 VectorStore.search，rag_service 仅做合并）
+# 默认注入的向量存储单例（：向量计分已收口到 VectorStore.search，rag_service 仅做合并）
 _default_vector_store = vector_store
 
 logger = logging.getLogger(__name__)
@@ -21,10 +21,10 @@ logger = logging.getLogger(__name__)
 # 知识库写操作异步锁（防御并发修改全局 BUILT_IN_KNOWLEDGE）
 _kb_lock = asyncio.Lock()
 
-# ── PF-1：KB 版本号命名空间（主动失效）──
+# ── ：KB 版本号命名空间（主动失效）──
 # 知识库发生写操作（add/delete_document）时自增版本号，使检索/embedding 缓存键随版本变化，
 # 旧版本缓存键自然 orphan（不再命中），下次检索必走实时计算，根治「快但旧」。
-# 单 worker 模型下用进程内计数器即可（MN-6 约束：A1 落地前 Docker 维持单副本）。
+# 单 worker 模型下用进程内计数器即可（ 约束： 落地前 Docker 维持单副本）。
 KB_VERSION = 0
 
 
@@ -41,7 +41,7 @@ def get_kb_version() -> int:
 
 
 def _normalize_query(q: str) -> str:
-    """PF-5：查询归一化（lower + 去全部空白 + 去标点），使同义问法命中同一缓存键。
+    """：查询归一化（lower + 去全部空白 + 去标点），使同义问法命中同一缓存键。
 
     空白对 RAG 检索缓存无语义价值（中文本无空白；英文合并亦可提升命中率），
     故直接去除而非仅压缩；标点同样去除。注意：仅用于缓存键，embedding 仍用原始 query。
@@ -53,7 +53,7 @@ def _normalize_query(q: str) -> str:
 
 
 def _filters_key(filters: Optional[Dict]) -> str:
-    """PF-5：filters 稳定序列化（按 key 排序），避免 dict 顺序差异导致缓存未命中。"""
+    """：filters 稳定序列化（按 key 排序），避免 dict 顺序差异导致缓存未命中。"""
     if not filters:
         return ""
     return json.dumps(filters, sort_keys=True, ensure_ascii=False)
@@ -163,7 +163,7 @@ BUILT_IN_KNOWLEDGE: List[Dict[str, Any]] = [
 
 
 def _tokenize(text: str) -> List[str]:
-    """中文友好的轻量分词（B6 修复）
+    """中文友好的轻量分词（ 修复）
 
     英文/数字按词切分；中文按「单字 + 相邻二字 bigram」展开，
     使整句中文也能与知识库问题/关键词逐字、逐段匹配，解决原空白切分
@@ -181,10 +181,10 @@ def _tokenize(text: str) -> List[str]:
     return tokens
 
 
-# ── PF-6：关键词倒排 / 加权索引（resident）──
+# ── ：关键词倒排 / 加权索引（resident）──
 # 启动时把 BUILT_IN_KNOWLEDGE 的「问题」一次性分词，构建 词语 → 文档下标 的倒排索引；
 # 同时预存每篇文档的关键词列表与分类文本，使每次检索不再对整库做分词 / lower / split，
-# _keyword_search 直接查索引得到召回与计分。文档增删后调用 _rebuild_keyword_index() 重建。
+# _keyword_search 直接查索引得到召回与计分。文档增删后调用 _rebuild_keyword_index 重建。
 _KEYWORD_INDEX: Dict[str, Any] = {"token_index": {}, "docs": []}
 
 
@@ -233,14 +233,14 @@ class RAGService:
         self.vector_store = vector_store if vector_store is not None else _default_vector_store
 
     async def _get_chroma(self):
-        """懒加载 ChromaDB 客户端（P7 修复：复用全局单例，避免同目录多客户端锁竞争）"""
+        """懒加载 ChromaDB 客户端（ 修复：复用全局单例，避免同目录多客户端锁竞争）"""
         from app.rag.chroma_client import get_chroma_client
         return get_chroma_client()
 
     def _make_vector_id(self, text: str) -> str:
-        """生成跨进程稳定的向量 ID（B3 修复）
+        """生成跨进程稳定的向量 ID（ 修复）
 
-        原实现用内置 hash()，受 PYTHONHASHSEED 影响，重启后同一文档 ID 不同，
+        原实现用内置 hash，受 PYTHONHASHSEED 影响，重启后同一文档 ID 不同，
         导致重复写入 / 删除失效。改用 sha256 摘要，结果跨进程、跨重启稳定。
         """
         return f"vec_{hashlib.sha256(text.encode('utf-8')).hexdigest()[:16]}"
@@ -273,7 +273,7 @@ class RAGService:
             name="rag-search",
             input={"query": query, "top_k": top_k, "filters": filters},
         ) as ret:
-            # ── PF-1/PF-5: 结果缓存（命中则跳过 embedding + 检索，仅做缓存命中追踪后返回）──
+            # ── /: 结果缓存（命中则跳过 embedding + 检索，仅做缓存命中追踪后返回）──
             # 键含 KB 版本号（写操作自增）+ 归一化查询 + 稳定 filters，天然支持主动失效
             res_key = _make_res_key(query, top_k, filters)
             cached = await self.cache.get(res_key)
@@ -289,7 +289,7 @@ class RAGService:
                 logger.info(f"RAG 检索命中结果缓存: {query[:50]}...")
                 return cached
 
-            # ── PF-1/PF-5: embedding 缓存（命中则跳过远程 embedding 调用）──
+            # ── /: embedding 缓存（命中则跳过远程 embedding 调用）──
             # 键含 KB 版本号 + 归一化查询；知识库变更后旧版本 embedding 键自动 orphan
             emb_key = _make_emb_key(query)
             query_embedding = await self.cache.get(emb_key)
@@ -297,7 +297,7 @@ class RAGService:
                 query_embedding = await self.embedding.encode_single(query)
                 await self.cache.set(emb_key, query_embedding, expire=3600)
 
-            # ── AR-5：向量检索与计分全部收口到 VectorStore.search ──
+            # ── ：向量检索与计分全部收口到 VectorStore.search ──
             # 零向量 / Chroma 不可用 / 空集合 等降级情形下返回 []，本方法回退到关键词检索，
             # 不再直接依赖 chromadb 内部字段（distance / metadata / documents 等）。
             chroma_results = await self.vector_store.search(query_embedding, top_k)
@@ -318,7 +318,7 @@ class RAGService:
                     },
                     metadata={"embedding_model": settings.EMBEDDING_MODEL} if chroma_results else {},
                 )
-            # ── P5: 写入结果缓存 ──
+            # ── : 写入结果缓存 ──
             await self.cache.set(res_key, merged, expire=600)
             return merged
 
@@ -338,7 +338,7 @@ class RAGService:
         return merged[:top_k]
 
     def _keyword_search(self, query: str, top_k: int, filters: Optional[Dict] = None) -> List[Dict[str, Any]]:
-        """基于关键词的内置知识库检索（PF-6：改查 resident 倒排索引，与原实现等价）
+        """基于关键词的内置知识库检索（：改查 resident 倒排索引，与原实现等价）
 
         召回与计分逻辑与原实现完全一致，计分权重收口至 config.INTENT_KEYWORD_WEIGHTS：
         - 关键词（显式）子串命中 → +INTENT_KEYWORD_WEIGHTS["explicit"] / 个；
@@ -428,7 +428,7 @@ class RAGService:
             return result
 
     async def generate_stream(self, query: str, context: str):
-        """基于检索结果流式生成（P6）。"""
+        """基于检索结果流式生成。"""
         if not context:
             async for piece in llm_service.generate_stream(f"请简洁回答用户问题：{query}"):
                 yield piece
@@ -469,9 +469,9 @@ class RAGService:
             except Exception as e:
                 logger.warning(f"ChromaDB 写入失败: {e}")
             finally:
-                # P10：文档增减后使「是否非空」缓存失效
+                # ：文档增减后使「是否非空」缓存失效
                 invalidate_collection_cache()
-                # PF-1：知识库写操作自增版本号，使检索/embedding 缓存键主动失效（根治「快但旧」）
+                # ：知识库写操作自增版本号，使检索/embedding 缓存键主动失效（根治「快但旧」）
                 _bump_kb_version()
 
         # 同时加到内置库（加锁保证写操作并发安全）
@@ -483,7 +483,7 @@ class RAGService:
                 "answer": answer,
                 "keywords": keywords,
             })
-            # PF-6：内置库变更后重建关键词倒排索引，使新文档可被检索召回
+            # ：内置库变更后重建关键词倒排索引，使新文档可被检索召回
             _rebuild_keyword_index()
 
         return vector_id
@@ -516,13 +516,13 @@ class RAGService:
         except Exception:
             pass
         finally:
-            # P10：文档增减后使「是否非空」缓存失效
+            # ：文档增减后使「是否非空」缓存失效
             invalidate_collection_cache()
-            # PF-1：知识库写操作自增版本号，使检索/embedding 缓存键主动失效（根治「快但旧」）
+            # ：知识库写操作自增版本号，使检索/embedding 缓存键主动失效（根治「快但旧」）
             _bump_kb_version()
         async with _kb_lock:
             BUILT_IN_KNOWLEDGE = [k for k in BUILT_IN_KNOWLEDGE if k.get("id") != knowledge_id]
-            # PF-6：内置库变更后重建关键词倒排索引，使被删文档不再被召回
+            # ：内置库变更后重建关键词倒排索引，使被删文档不再被召回
             _rebuild_keyword_index()
         return True
 

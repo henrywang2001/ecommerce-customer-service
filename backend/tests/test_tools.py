@@ -1,8 +1,8 @@
-"""TC-5 — 工具层测试（EX-2 注册表 + 各工具行为）。
+""" — 工具层测试（ 注册表 + 各工具行为）。
 
 覆盖：
 - 注册表收录全部 6 个工具、requires_auth 元数据正确；
-- 需要登录的工具在 user_id=None 时被拦截（F1 鉴权）；
+- 需要登录的工具在 user_id=None 时被拦截（ 鉴权）；
 - 各工具 execute 返回结构正确、退款分支正确、transfer_human 的 “or” 逻辑稳固；
 - 异常兜底：工具内部抛错时返回 {"success": False, ...} 而非崩溃；
 - 注册表驱动的意图路由 dispatch_intent（intent_code → 注册表 → execute）。
@@ -55,7 +55,7 @@ def test_tool_requires_auth_metadata():
     assert TransferHumanTool().requires_auth is False
 
 
-# ──────────────────── requires_auth 拦截（F1）────────────────────
+# ──────────────────── requires_auth 拦截────────────────────
 
 async def test_requires_auth_blocks_when_user_id_none(anon_agent):
     # 即使 params 带了 user_id，agent.user_id 为 None 也必须拦截

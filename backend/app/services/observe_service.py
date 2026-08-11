@@ -8,7 +8,7 @@
 
     # Context manager 方式（推荐）
     with observe.span("my-operation", input_data) as span:
-        result = do_work()
+        result = do_work
         span.update(output=result)
 
     # Generation 追踪

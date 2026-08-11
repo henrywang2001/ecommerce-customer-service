@@ -1,4 +1,4 @@
-"""工具注册表（EX-2）— 单一工具来源 + 意图触发映射。
+"""工具注册表— 单一工具来源 + 意图触发映射。
 
 目标：把「有哪些工具、各自触发哪些意图、是否需要登录」收敛到一处，
 使新增工具 = 1 个类 + 1 行 ``@tool`` 装饰器，无需改动 ``CustomerServiceAgent._init_tools``
@@ -19,9 +19,9 @@ from typing import Any, Dict, List, Optional, Type
 class BaseTool(ABC):
     """工具抽象基类。
 
-    子类通过 ``@tool(...)`` 声明元数据；``__init__`` 中调用 ``super().__init__()``
+    子类通过 ``@tool(...)`` 声明元数据；``__init__`` 中调用 ``super.__init__``
     即从装饰器元数据拉取 ``name`` / ``requires_auth`` / ``description`` / ``triggers``，
-    无需在子类里重复赋值（单一事实来源，杜绝 F2 类元数据漂移）。
+    无需在子类里重复赋值（单一事实来源，杜绝 类元数据漂移）。
     """
 
     name: str = ""

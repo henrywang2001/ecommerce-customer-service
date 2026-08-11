@@ -1,10 +1,10 @@
 """限流器
 
-P8 修复要点：
+修复要点：
 1. 内存泄漏：原实现用 defaultdict(list)，键（client_ip）永不删除，空列表残留导致
    内存随不同 IP 数无限增长。现改用普通 dict + 窗口清空即删除键，内存有界。
 2. 多进程/水平扩展：新增 RedisRateLimiter（有序集合滑动窗口），多实例共享同一窗口，
-   限流在多进程下真正生效。create_rate_limiter() 在启动时探测 Redis 连通性，
+   限流在多进程下真正生效。create_rate_limiter 在启动时探测 Redis 连通性，
    可达则用 Redis 后端，否则回退内存模式（单进程）。
 """
 import time
@@ -103,8 +103,8 @@ def create_rate_limiter(max_requests: int = None, window_seconds: int = None, ba
     backend 可强制指定后端：
       - "memory"：跳过 Redis 探测，直接使用内存模式（测试 / 单进程明确场景）；
       - "redis" ：强制探测 Redis（探测失败仍回退内存）；
-      - None    ：自动探测（默认行为，保持向后兼容）。
-    max_requests / window_seconds 可覆盖默认（用于昂贵接口更严格的限流，P4）。
+      - None ：自动探测（默认行为，保持向后兼容）。
+    max_requests / window_seconds 可覆盖默认（用于昂贵接口更严格的限流，）。
     """
     mr = max_requests if max_requests is not None else DEFAULT_MAX_REQUESTS
     ws = window_seconds if window_seconds is not None else DEFAULT_WINDOW_SECONDS
@@ -132,6 +132,6 @@ def create_rate_limiter(max_requests: int = None, window_seconds: int = None, ba
 
 # 全局实例（启动时探测后端）
 rate_limiter = create_rate_limiter()
-# 昂贵接口专用限流（P4）：/send 等 LLM 重路径单分钟上限更低
+# 昂贵接口专用限流：/send 等 LLM 重路径单分钟上限更低
 from app.core.config import settings as _settings
 heavy_rate_limiter = create_rate_limiter(max_requests=_settings.RATE_LIMIT_HEAVY_MAX_REQUESTS, window_seconds=60)

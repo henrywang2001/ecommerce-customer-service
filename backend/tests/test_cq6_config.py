@@ -1,4 +1,4 @@
-"""CQ-6 — 运行期参数收口验证：会话/连接池/关键词权重集中到 config，且 chat_service 不再硬编码。"""
+""" — 运行期参数收口验证：会话/连接池/关键词权重集中到 config，且 chat_service 不再硬编码。"""
 from app.core.config import settings
 import app.services.chat_service as chat_service
 

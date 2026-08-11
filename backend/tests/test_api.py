@@ -12,7 +12,7 @@ def test_health():
 
 
 def test_root_is_always_public():
-    """H2/B2：根路径为永远公开路由，无需令牌即可访问（不受 REQUIRE_AUTH 影响）。"""
+    """：根路径为永远公开路由，无需令牌即可访问（不受 REQUIRE_AUTH 影响）。"""
     with TestClient(app) as client:
         r = client.get("/")
         assert r.status_code == 200

@@ -1,4 +1,4 @@
-"""商品相关 Pydantic Schemas（F3 修复：对齐真实返回结构，提供契约校验）"""
+"""商品相关 Pydantic Schemas（ 修复：对齐真实返回结构，提供契约校验）"""
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 

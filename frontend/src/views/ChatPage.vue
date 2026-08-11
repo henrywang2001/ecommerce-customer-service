@@ -10,7 +10,7 @@
       </div>
     </header>
 
-    <!-- 连接异常横幅（U3） -->
+    <!-- 连接异常横幅 -->
     <div v-if="!chatStore.isConnected" class="conn-banner" role="alert">
       <span>⚠️ {{ chatStore.sessionError || 'AI 服务暂不可用' }}</span>
       <el-button size="small" type="primary" @click="chatStore.retryInit()">重新连接</el-button>
@@ -24,7 +24,7 @@
       </div>
     </transition>
 
-    <!-- 聊天消息区域（PF-3：虚拟滚动，仅渲染可见 + 缓冲 DOM 节点） -->
+    <!-- 聊天消息区域（：虚拟滚动，仅渲染可见 + 缓冲 DOM 节点） -->
     <div class="chat-messages-wrap">
       <!-- 欢迎消息 -->
       <div v-if="chatStore.messages.length === 0" class="welcome">
@@ -107,7 +107,7 @@
       </el-button>
     </div>
 
-    <!-- 会话评价（F2）：接线此前未使用的 rateSession -->
+    <!-- 会话评价：接线此前未使用的 rateSession -->
     <div v-if="showRating" class="rating-bar">
       <span class="rating-label">本次服务是否解决了您的问题？</span>
       <div class="rating-stars" role="radiogroup" aria-label="会话满意度评分（1 到 5 星）">
@@ -155,11 +155,11 @@ import { ref, computed, nextTick, watch } from 'vue'
 import { useChatStore } from '@/stores/chat'
 import { useThemeStore } from '@/stores/theme'
 import { renderMarkdown } from '@/utils/markdown'
-// PF-3：虚拟滚动（vue-virtual-scroller v3，兼容 Vue 3）
+// ：虚拟滚动（vue-virtual-scroller v3，兼容 Vue 3）
 import { DynamicScroller, DynamicScrollerItem } from 'vue-virtual-scroller'
 import 'vue-virtual-scroller/dist/vue-virtual-scroller.css'
 
-// F1 守卫：必须显式声明组件名，否则 keep-alive include="ChatPage" 无法命中
+// 守卫：必须显式声明组件名，否则 keep-alive include="ChatPage" 无法命中
 defineOptions({ name: 'ChatPage' })
 
 const chatStore = useChatStore()
@@ -175,7 +175,7 @@ const quickServices = [
   { code: 'human', icon: '👤', name: '转人工', text: '转人工客服' },
 ]
 
-// PF-3：虚拟滚动容器引用（DynamicScroller 自带 scrollToBottom 方法）
+// ：虚拟滚动容器引用（DynamicScroller 自带 scrollToBottom 方法）
 const scrollerRef = ref<any>(null)
 function scrollerEl(): HTMLElement | undefined {
   const comp = scrollerRef.value as unknown as { $el?: HTMLElement } | undefined
@@ -215,7 +215,7 @@ watch(
   { flush: 'post' },
 )
 
-// F2：会话满意度评价
+// ：会话满意度评价
 const ratingScore = ref(0)
 const ratingSubmitted = ref(false)
 const ratingDismissed = ref(false)
@@ -256,7 +256,7 @@ function autoResize() {
   inputRows.value = Math.min(Math.max(lines, 2), 6)
 }
 
-// P6：流式发送入口（模板 quick-service / quick-reply / Ctrl+Enter / 发送 按钮均调用）
+// ：流式发送入口（模板 quick-service / quick-reply / Ctrl+Enter / 发送 按钮均调用）
 function sendMessageStream(content?: string) {
   if (chatStore.isTyping) return
   const text = content || inputText.value.trim()
@@ -539,7 +539,7 @@ function formatTime(timeStr: string): string {
   box-shadow: 0 4px 12px rgba(0,0,0,0.12) !important;
 }
 
-/* P12：更早消息入口 */
+/* ：更早消息入口 */
 .history-banner {
   text-align: center;
   font-size: 12px;
@@ -554,7 +554,7 @@ function formatTime(timeStr: string): string {
 .history-banner:hover { background: rgba(102, 126, 234, 0.16); }
 .history-banner:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-/* F2：会话评价条 */
+/* ：会话评价条 */
 .rating-bar {
   display: flex;
   align-items: center;

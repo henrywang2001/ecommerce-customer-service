@@ -1,4 +1,4 @@
-"""商品查询工具（F5 修复：商品数据统一从 app.data.mock_data 读取，杜绝双源漂移）"""
+"""商品查询工具（ 修复：商品数据统一从 app.data.mock_data 读取，杜绝双源漂移）"""
 from typing import Dict, Any, List
 import logging
 

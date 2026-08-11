@@ -36,7 +36,7 @@ python-dotenv==1.0.1
 
 # 可观测性
 langfuse>=3.0.0
-# Prometheus 指标（MN-3：/metrics 端点）
+# Prometheus 指标（：/metrics 端点）
 prometheus_client>=0.19.0
 
 # 测试

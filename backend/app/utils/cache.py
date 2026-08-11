@@ -1,7 +1,7 @@
-"""缓存工具 — Redis 封装（P3 修复）
+"""缓存工具 — Redis 封装（ 修复）
 
 缓存统一走 Redis（水平扩展友好），无 Redis 时 fallback 到「有界 + TTL」的内存缓存，
-避免原实现中 _cache 无上限增长导致的内存泄漏（P3/P9）。
+避免原实现中 _cache 无上限增长导致的内存泄漏（/）。
 """
 import json
 import time
@@ -59,10 +59,10 @@ class Cache:
     """缓存工具类 — 优先 Redis，无 Redis 时使用有界内存"""
 
     def __init__(self):
-        # MN-7b：_redis 三态——
-        #   None   = 尚未探测
-        #   client = 已连接（redis.asyncio client）
-        #   dict   = 退避中 {"next_retry": float, "failures": int}
+        # ：_redis 三态——
+        # None = 尚未探测
+        # client = 已连接（redis.asyncio client）
+        # dict = 退避中 {"next_retry": float, "failures": int}
         # （兼容测试中将 _redis 置为 False 直接走内存后端的用法）
         self._redis = None
         self._memory = _MemoryBackend()
@@ -73,10 +73,10 @@ class Cache:
         self._max_backoff = 30.0       # 退避上限（秒）
 
     async def _get_redis(self):
-        """懒加载 Redis 连接，带「退避重试」而非永久降级（MN-7b）。
+        """懒加载 Redis 连接，带「退避重试」而非永久降级。
 
-        - None  → 首次探测
-        - dict  → 处于退避窗口内，直接降级内存（fail-open，不阻断请求）
+        - None → 首次探测
+        - dict → 处于退避窗口内，直接降级内存（fail-open，不阻断请求）
         - client→ 已连接
         - False → 测试/强制内存模式（兼容 conftest 置 _redis=False 的用法）
         任何失败都 fail-open（返回 None → 走内存），并 LOG 失败；达到退避时间后

@@ -20,7 +20,7 @@ def test_scores_in_unit_interval(patch_embedding):
 
 
 def test_category_filter(patch_embedding):
-    """M3 修复：category 过滤透传，返回结果分类应一致。"""
+    """ 修复：category 过滤透传，返回结果分类应一致。"""
     results = asyncio.run(rag_service.search("退款", top_k=5, filters={"category": "退换货政策"}))
     for r in results:
         assert r["category"] == "退换货政策"

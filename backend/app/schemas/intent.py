@@ -27,7 +27,7 @@ class IntentRecognizeRequest(BaseModel):
 class IntentRecognizeResponse(BaseModel):
     """意图识别响应。
 
-    F9 修复：移除与 ``intent.entities`` 语义重复的顶层 ``entities`` 字段，
+    修复：移除与 ``intent.entities`` 语义重复的顶层 ``entities`` 字段，
     避免冗余契约与「前端取错层级」的不一致风险（意图实体统一从 ``intent.entities`` 读取）。
     """
     intent: IntentResult

@@ -1,4 +1,4 @@
-"""商品服务 API 路由（F3/F5 修复：单一数据源 + 声明 response_model 对齐契约）"""
+"""商品服务 API 路由（/ 修复：单一数据源 + 声明 response_model 对齐契约）"""
 from fastapi import APIRouter, Query
 from typing import Optional
 

@@ -1,4 +1,4 @@
-"""CQ-4 构造函数依赖注入（DI）可测试性验证。
+""" 构造函数依赖注入（DI）可测试性验证。
 
 证明核心服务可通过构造函数注入 fake 依赖，而无需对全局单例做重型 monkeypatch：
 - RAGService(cache=fake_cache, embedding=fake_embedding)：验证缓存读写走注入的 fake；

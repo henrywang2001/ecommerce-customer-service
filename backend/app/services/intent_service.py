@@ -1,14 +1,14 @@
 """意图识别服务（集成 Langfuse 追踪）
 
-EX-1 声明式意图配置
---------------------
+声明式意图配置
+--------------
 - ``IntentSpec`` 为单一来源（single source of truth），集中每个意图的
   keywords / handler / priority / prompt_label / synonyms；
 - ``INTENT_CONFIGS``、``_INTENT_SYNONYMS`` 以及 LLM 提示词全部由 ``INTENT_SPECS``
   自动派生。新增（或调整）一个意图 = 往 ``INTENT_SPECS`` 追加一条 ``IntentSpec``，
   **零识别逻辑改动**。
 
-公共 API 约束：``recognize()`` 的签名与返回结构保持不变，chat_service.py 等调用方无需改动。
+公共 API 约束：``recognize`` 的签名与返回结构保持不变，chat_service.py 等调用方无需改动。
 """
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any
@@ -115,7 +115,7 @@ INTENT_SPECS: List[IntentSpec] = [
 # 由单一来源派生的查表表（保留对外名字 INTENT_CONFIGS，值为 IntentSpec）
 INTENT_CONFIGS: Dict[str, IntentSpec] = {s.code: s for s in INTENT_SPECS}
 
-# 由单一来源派生的同义词表（B8 修复：口语化/近义意图码 → 标准码）
+# 由单一来源派生的同义词表（ 修复：口语化/近义意图码 → 标准码）
 _INTENT_SYNONYMS: Dict[str, str] = {
     syn: s.code for s in INTENT_SPECS for syn in s.synonyms
 }
@@ -145,21 +145,21 @@ class IntentService:
     async def recognize(self, text: str, user_id: Optional[int] = None, preferred_intent: Optional[str] = None) -> IntentResult:
         """识别用户意图 — 多策略融合
 
-        F12 修复：若调用方已预识别意图（如 Agent 路由携带 intent_code）且意图码合法，
+        修复：若调用方已预识别意图（如 Agent 路由携带 intent_code）且意图码合法，
         直接采用预识别结果（高置信），跳过 LLM，既省一次调用也保证前后链路意图一致；
         否则走原有的「关键词 + LLM」多策略融合。
 
-        B13 修复（更完善）：text 可能为 None（调用方未传 / 异常负载 / 上游解析失败）。
+        修复（更完善）：text 可能为 None（调用方未传 / 异常负载 / 上游解析失败）。
         原报告仅建议在日志切片处加 `or ""`，但运行时实测真正崩溃点在
-        `_keyword_match` 内部的 `text.lower()`（text 为 None 时抛 AttributeError）。
+        `_keyword_match` 内部的 `text.lower`（text 为 None 时抛 AttributeError）。
         故在此统一将 text 归一为字符串；None/空串直接短路返回 fallback 意图，
         既杜绝崩溃，也避免对空文本发起无意义的 LLM 调用。
         """
-        # B13：归一化为字符串，杜绝下游 text.lower() 在 None 上抛 AttributeError
+        # ：归一化为字符串，杜绝下游 text.lower 在 None 上抛 AttributeError
         safe_text = text if isinstance(text, str) else ""
         logger.info(f"意图识别: {safe_text[:50]}...")  # 日志切片安全（双保险）
 
-        # F12：预识别意图优先（仅当意图码在已知配置内，不依赖 text）
+        # ：预识别意图优先（仅当意图码在已知配置内，不依赖 text）
         if preferred_intent and preferred_intent in INTENT_CONFIGS:
             config = INTENT_CONFIGS[preferred_intent]
             return IntentResult(
@@ -171,7 +171,7 @@ class IntentService:
                 priority=config.priority,
             )
 
-        # B13：空文本（None 已归一为 "" 或用户传入空白串）直接兜底，
+        # ：空文本（None 已归一为 "" 或用户传入空白串）直接兜底，
         # 避免对空文本调用 LLM 造成浪费与潜在异常。
         if not safe_text.strip():
             cfg = INTENT_CONFIGS["fallback"]
@@ -189,7 +189,7 @@ class IntentService:
         # 1. 关键词匹配
         keyword_result = self._keyword_match(text)
 
-        # 2. LLM 深度理解（P2 优化：关键词高置信命中则跳过 LLM，意图分类调用减半）
+        # 2. LLM 深度理解（ 优化：关键词高置信命中则跳过 LLM，意图分类调用减半）
         if keyword_result is not None and keyword_result.confidence >= settings.INTENT_THRESHOLD:
             logger.info("关键词高置信命中，跳过 LLM 意图分类")
             llm_result = None
@@ -236,7 +236,7 @@ class IntentService:
         return best_match
 
     def _normalize_intent_code(self, code: str, text: str) -> Optional[str]:
-        """B8 修复：将 LLM 返回的（可能不在配置表中的）意图码归一为已知标准码。
+        """ 修复：将 LLM 返回的（可能不在配置表中的）意图码归一为已知标准码。
 
         原实现用 ``INTENT_CONFIGS.get(code, fallback)``，未知码整体当作 fallback
         （handler_type="llm"、priority=0），在 _fuse_intents 中几乎必输给关键词匹配，
@@ -274,7 +274,7 @@ class IntentService:
 
     async def _llm_understand(self, text: str) -> Optional[IntentResult]:
         """LLM 深度意图理解 — Langfuse generation 追踪"""
-        # EX-1：提示词由 INTENT_SPECS 单一来源渲染，新增意图自动纳入候选
+        # ：提示词由 INTENT_SPECS 单一来源渲染，新增意图自动纳入候选
         prompt = _render_intent_prompt(text)
 
         # ── Langfuse: 意图分类 generation 追踪 ──

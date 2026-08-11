@@ -8,9 +8,9 @@ from app.services.chat_service import chat_service
 
 
 def test_order_query_returns_real_order(patch_embedding, patch_intent_order):
-    """M6：order_query 委派 QueryOrderTool，返回真实订单（含戴森，非 iPhone）。
+    """：order_query 委派 QueryOrderTool，返回真实订单（含戴森，非 iPhone）。
 
-    F6：query_order 需要登录（requires_auth），须携带已认证 user_id。
+    ：query_order 需要登录（requires_auth），须携带已认证 user_id。
     """
     res = asyncio.run(chat_service.send_message("s_order", "查订单 ORDER20260401001", 1))
     assert res["intent"]["intent_code"] == "order_query"
@@ -19,30 +19,30 @@ def test_order_query_returns_real_order(patch_embedding, patch_intent_order):
 
 
 def test_refund_tool_no_fake_order(patch_embedding, patch_intent_refund):
-    """M6 + 前轮修复：refund_request 走 RefundTool，不再硬编码 iPhone。"""
+    """ + 前轮修复：refund_request 走 RefundTool，不再硬编码 iPhone。"""
     res = asyncio.run(chat_service.send_message("s_refund", "我要申请退款", None))
     assert res["intent"]["intent_code"] == "refund_request"
     assert "iPhone" not in res["response"]
 
 
 def test_product_inquiry_wires_query_product(patch_embedding, patch_intent_product):
-    """M6：product_inquiry 改为 tool handler，委派 QueryProductTool。"""
+    """：product_inquiry 改为 tool handler，委派 QueryProductTool。"""
     res = asyncio.run(chat_service.send_message("s_product", "我想买戴森吹风机", None))
     assert res["intent"]["intent_code"] == "product_inquiry"
     assert len(res["response"]) > 0
 
 
 def test_transfer_wires_tool(patch_embedding, patch_intent_transfer):
-    """M6：transfer 分支委派 TransferHumanTool，need_transfer 保持。"""
+    """：transfer 分支委派 TransferHumanTool，need_transfer 保持。"""
     res = asyncio.run(chat_service.send_message("s_transfer", "转人工", None))
     assert res["need_transfer"] is True
     assert "人工" in res["response"]
 
 
 def test_ticket_create_wires_tool(patch_embedding, patch_intent_ticket):
-    """M6：新增 ticket_create 意图，委派 CreateTicketTool。
+    """：新增 ticket_create 意图，委派 CreateTicketTool。
 
-    F6：create_ticket 需要登录（requires_auth），须携带已认证 user_id。
+    ：create_ticket 需要登录（requires_auth），须携带已认证 user_id。
     """
     res = asyncio.run(chat_service.send_message("s_ticket", "我要提交工单反馈问题", 1))
     assert res["intent"]["intent_code"] == "ticket_create"
@@ -59,7 +59,7 @@ def test_history_and_delete_idempotent(patch_embedding, patch_llm, patch_intent_
     assert hist["total"] == 2  # user + assistant
 
     assert asyncio.run(chat_service.delete_session(sid)) is True
-    # F1：删除不存在的 id 幂等，但返回 False 表示"该会话此前并不存在"
+    # ：删除不存在的 id 幂等，但返回 False 表示"该会话此前并不存在"
     assert asyncio.run(chat_service.delete_session("nonexistent_id_x")) is False
 
 

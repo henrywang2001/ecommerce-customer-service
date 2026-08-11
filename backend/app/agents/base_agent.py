@@ -1,4 +1,4 @@
-"""Agent 基类（AR-1：无状态执行器）"""
+"""Agent 基类（：无状态执行器）"""
 from abc import ABC
 from typing import Any, Dict, Optional
 import uuid
@@ -16,7 +16,7 @@ class BaseAgent(ABC):
       不缓存对话历史、不维护 per-session 可变字典。
 
     多副本正确性：每次请求经 `SessionManager.prepare` 按会话元数据重建本实例，
-    对话上下文从 Redis 加载，因此副本间不会因本地状态而漂移（见 chat_service AR-1）。
+    对话上下文从 Redis 加载，因此副本间不会因本地状态而漂移（见 chat_service ）。
     """
 
     def __init__(self, session_id: str, user_id: Optional[int] = None):

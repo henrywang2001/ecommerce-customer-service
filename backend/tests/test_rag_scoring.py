@@ -1,10 +1,10 @@
-"""AR-5（计分收口到 VectorStore.search）+ PF-6（关键词倒排 / 加权索引）验证。
+"""（计分收口到 VectorStore.search）+ （关键词倒排 / 加权索引）验证。
 
 不依赖真实 Chroma / Embedding / Redis：
-- AR-5 通过 monkeypatch 注入 fake collection / fake VectorStore，验证计分已收口到
+- 通过 monkeypatch 注入 fake collection / fake VectorStore，验证计分已收口到
   VectorStore.search（零向量降级、distance→[0,1] 归一化、返回形态），且 rag_service.search
   只做向量 + 关键词合并，不再直接碰 chromadb 内部字段。
-- PF-6 验证启动时已构建 resident 倒排索引、_keyword_search 查索引与原逐文档扫描算法
+- 验证启动时已构建 resident 倒排索引、_keyword_search 查索引与原逐文档扫描算法
   输出完全一致、以及文档增删后索引随之重建。
 """
 import asyncio
@@ -24,7 +24,7 @@ from app.services.rag_service import (
 )
 
 
-# ───────────────────────── AR-5：VectorStore.search 计分收口 ─────────────────────────
+# ───────────────────────── ：VectorStore.search 计分收口 ─────────────────────────
 
 class FakeCollection:
     """模拟 Chroma collection.query，返回可预测 distance 以验证归一化。"""
@@ -55,7 +55,7 @@ async def _no_chroma():
 
 
 def test_vectorstore_zero_vector_returns_empty_and_skips_chroma(monkeypatch):
-    """AR-5：零向量 / 降级检测应短路返回 []，且不创建 Chroma 客户端。"""
+    """：零向量 / 降级检测应短路返回 []，且不创建 Chroma 客户端。"""
     called = {"n": 0}
 
     async def _spy_get_collection():
@@ -69,13 +69,13 @@ def test_vectorstore_zero_vector_returns_empty_and_skips_chroma(monkeypatch):
 
 
 def test_vectorstore_none_embedding_returns_empty(monkeypatch):
-    """AR-5：embedding 为 None 时同样降级返回 []。"""
+    """：embedding 为 None 时同样降级返回 []。"""
     result = asyncio.run(vector_store_mod.vector_store.search(None, 5))
     assert result == []
 
 
 def test_vectorstore_minmax_normalization(monkeypatch):
-    """AR-5：distance 经 min-max 归一化到 [0,1]（最近→1.0，最远→0.0），形态与内置库对齐。"""
+    """：distance 经 min-max 归一化到 [0,1]（最近→1.0，最远→0.0），形态与内置库对齐。"""
     monkeypatch.setattr(vector_store_mod.vector_store, "_get_collection", _fake_get_collection)
     monkeypatch.setattr(vector_store_mod, "collection_has_docs", _async_true)
 
@@ -87,7 +87,7 @@ def test_vectorstore_minmax_normalization(monkeypatch):
 
 
 def test_vectorstore_normalization_span_zero(monkeypatch):
-    """AR-5：单条结果（span=0）归一化为 1.0，不出现 NaN。"""
+    """：单条结果（span=0）归一化为 1.0，不出现 NaN。"""
 
     class OneDocCollection:
         def query(self, query_embeddings, n_results):
@@ -139,7 +139,7 @@ class FakeVectorStore:
 
 
 def test_rag_service_merges_vector_and_keyword(patch_embedding):
-    """AR-5：rag_service.search 仅合并 VectorStore 结果 + 关键词结果，分数在 [0,1]。"""
+    """：rag_service.search 仅合并 VectorStore 结果 + 关键词结果，分数在 [0,1]。"""
     fake_vs = FakeVectorStore([
         {"id": "vec_abc", "category": "支付问题", "question": "退款多久到账",
          "answer": "退款说明", "score": 0.9},
@@ -154,16 +154,16 @@ def test_rag_service_merges_vector_and_keyword(patch_embedding):
     assert fake_vs.calls == 1      # 仅调用一次 VectorStore.search，rag_service 不再直接查 chroma
 
 
-# ───────────────────────── PF-6：关键词倒排索引 ─────────────────────────
+# ───────────────────────── ：关键词倒排索引 ─────────────────────────
 
 def test_keyword_index_built_at_import():
-    """PF-6：启动时已构建 resident 倒排索引，覆盖全部内置文档。"""
+    """：启动时已构建 resident 倒排索引，覆盖全部内置文档。"""
     assert len(rag_service_mod._KEYWORD_INDEX["docs"]) == len(BUILT_IN_KNOWLEDGE) == 13
     assert rag_service_mod._KEYWORD_INDEX["token_index"]  # 非空
 
 
 def test_build_keyword_index_dedupes_repeated_tokens():
-    """PF-6：_build_keyword_index 对问题内重复词去重，避免多次命中计数。"""
+    """：_build_keyword_index 对问题内重复词去重，避免多次命中计数。"""
     kb = [{"id": "k1", "category": "测试", "question": "物流流",
            "answer": "a", "keywords": "物流"}]
     idx = _build_keyword_index(kb)
@@ -174,7 +174,7 @@ def test_build_keyword_index_dedupes_repeated_tokens():
 
 
 def _brute_keyword_search(query, top_k, filters=None):
-    """旧实现复刻，用于验证 PF-6 索引路径与逐文档扫描等价。"""
+    """旧实现复刻，用于验证 索引路径与逐文档扫描等价。"""
     query_lower = query.lower()
     scored = []
     q_token_set = set(_tokenize(query_lower))
@@ -211,7 +211,7 @@ def _brute_keyword_search(query, top_k, filters=None):
     ("", None),
 ])
 def test_keyword_search_equivalent_to_bruteforce(query, filters):
-    """PF-6：索引路径与原逐文档扫描算法输出完全一致（id 顺序 + score）。"""
+    """：索引路径与原逐文档扫描算法输出完全一致（id 顺序 + score）。"""
     got = rag_service._keyword_search(query, 5, filters)
     exp = _brute_keyword_search(query, 5, filters)
     assert [r["id"] for r in got] == [r["id"] for r in exp]
@@ -221,7 +221,7 @@ def test_keyword_search_equivalent_to_bruteforce(query, filters):
 
 
 def test_keyword_search_scores_in_unit_interval():
-    """PF-6：索引路径返回的分数必须落在 [0,1]。"""
+    """：索引路径返回的分数必须落在 [0,1]。"""
     results = rag_service._keyword_search("退款多久到账", 5, None)
     assert results
     for r in results:
@@ -238,7 +238,7 @@ def preserve_kb():
 
 
 def test_keyword_index_rebuild_on_add_delete(patch_embedding, monkeypatch, preserve_kb):
-    """PF-6：文档增删后倒排索引随之更新（新文档可被召回，删除后不再召回）。"""
+    """：文档增删后倒排索引随之更新（新文档可被召回，删除后不再召回）。"""
     monkeypatch.setattr(rag_service, "_get_chroma", _no_chroma)
 
     before = len(rag_service_mod._KEYWORD_INDEX["docs"])

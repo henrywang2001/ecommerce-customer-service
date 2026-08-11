@@ -1,4 +1,4 @@
-"""TC-7：并发安全 + 分页裁剪 + LLM 韧性回落。
+"""：并发安全 + 分页裁剪 + LLM 韧性回落。
 
 - asyncio.gather 并发 send_message：无 KeyError、历史条数一致；
 - get_history(page=-1, page_size=9999) 被裁剪（page→1, page_size→100）；
@@ -39,7 +39,7 @@ def test_concurrent_send_no_keyerror_and_consistent(patch_embedding, patch_llm, 
 
 
 def test_get_history_page_clamped(patch_embedding, patch_llm, patch_intent_llm):
-    """get_history 分页参数防御性裁剪（B10）：负页/超大页被夹到合法范围。"""
+    """get_history 分页参数防御性裁剪：负页/超大页被夹到合法范围。"""
     sid = "s_tc7_clamp"
     asyncio.run(chat_service.session_manager.prepare(sid, None))
     asyncio.run(chat_service.send_message(sid, "你好", None))

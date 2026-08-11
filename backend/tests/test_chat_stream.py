@@ -1,6 +1,6 @@
-"""TC-3：流式 stream_message 契约验证。
+"""：流式 stream_message 契约验证。
 
-用 CQ-4 风格注入 FakeSessionManager（不依赖真实 Redis），并用 conftest 的
+用 风格注入 FakeSessionManager（不依赖真实 Redis），并用 conftest 的
 patch_intent_*/patch_embedding 让意图确定性；LLM 流式路径额外 monkeypatch chat_stream
 避免真实联网。验证：
 - async for 收集的输出含 ≥1 个 token 事件，且以 type=done 结束（含 intent/sentiment/quick_replies）；
@@ -35,7 +35,7 @@ class FakeAgent:
 
 
 class FakeSessionManager:
-    """CQ-4 风格注入的假 SessionManager：会话状态留在内存 dict，不碰 Redis。"""
+    """ 风格注入的假 SessionManager：会话状态留在内存 dict，不碰 Redis。"""
 
     def __init__(self, agent=None):
         self._agent = agent if agent is not None else FakeAgent()

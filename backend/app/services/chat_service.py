@@ -1,20 +1,20 @@
 """对话服务 - 整合意图识别、情感分析、RAG、Agent（集成 Langfuse 追踪）
 
-KEYSTONE 重构（A1 / AR-1 / AR-2 / CQ-1 / CQ-2 / MN-5 / EX-4）：
-- 会话态外移 Redis（AR-1 / EX-4 / CQ-1）：会话上下文（元数据 + 对话历史）不再驻留进程内
+KEYSTONE 重构（ / / / / / / ）：
+- 会话态外移 Redis（ / / ）：会话上下文（元数据 + 对话历史）不再驻留进程内
   字典，而是序列化为 `SessionContext`（dataclass）存入 Redis（复用 utils/cache.py 的既有
   Redis 封装 `cache`，不再单独开连接），key=`session:{session_id}`，TTL=24h。
   进程重启 / 多副本下会话不丢失、不漂移（权威副本在 Redis）。
-- Agent 无状态（AR-1）：`CustomerServiceAgent` 不再持有任何会话可变状态；每次请求经
+- Agent 无状态：`CustomerServiceAgent` 不再持有任何会话可变状态；每次请求经
   `SessionManager.prepare` 按会话元数据重建一个纯执行器（仅含 session_id/user_id/工具）。
-- 三层分发（AR-2）：意图路由器 `IntentRouter` + 已注册策略 `IntentHandler` 对象 + 会话门面
+- 三层分发：意图路由器 `IntentRouter` + 已注册策略 `IntentHandler` 对象 + 会话门面
   `SessionManager`。`ChatService` 不再写 if/elif 大分支；新增意图/处理器只需向 `intent_router`
   注册一个 handler，无需改动 `ChatService` 内部。
-- 单一真相源（CQ-2）：`_core_process` 抽取非流式核心链路，返回
+- 单一真相源：`_core_process` 抽取非流式核心链路，返回
   `(response_text, intent_result, sentiment, sentiment_score, quick_replies, need_transfer)`；
   `send_message` 调用它持久化并返回；`stream_message` 在 handler 内逐 token 产出，并以同一
   `_build_messages_and_payload` 构造 done 事件，保证流式/非流式强一致。
-- 追踪下沉（MN-5）：意图/情感 `observe.span` 收敛进 `_recognize_intent_and_sentiment`，
+- 追踪下沉：意图/情感 `observe.span` 收敛进 `_recognize_intent_and_sentiment`，
   send/stream 两条路径共用；流式 LLM/RAG 额外包 `observe.generation`，两条路径自动获得追踪。
 """
 from typing import Dict, Any, Optional, List, Tuple
@@ -39,7 +39,7 @@ from app.utils.cache import cache as _redis_cache  # 复用既有 Redis 封装�
 
 logger = logging.getLogger(__name__)
 
-# 会话生命周期治理（M1）：容量上限 + 空闲 TTL（参数已收口至 config.py）
+# 会话生命周期治理：容量上限 + 空闲 TTL（参数已收口至 config.py）
 # SESSION_MAX_COUNT / SESSION_TTL / HISTORY_TURNS 见 app.core.config.settings
 REDIS_SESSION_PREFIX: str = "session:"
 
@@ -89,7 +89,7 @@ class SessionContext:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 会话门面（AR-2 第三层）：会话状态的唯一临界区来源；权威副本在 Redis/cache。
+# 会话门面（ 第三层）：会话状态的唯一临界区来源；权威副本在 Redis/cache。
 # ─────────────────────────────────────────────────────────────────────────────
 class SessionManager:
     """会话状态管理器：会话上下文的外部化（Redis）门面 + 进程内锁串行化写操作。
@@ -99,8 +99,8 @@ class SessionManager:
       自动 fallback 到「有界 + TTL」内存缓存，见 utils/cache.py）。
     - `_index` 仅为进程内轻量索引（session_id→最后活跃时间戳），用于 LRU 容量淘汰与存在性
       快检；它不是权威数据，不影响跨副本/重启后的会话正确性（数据以 Redis 为准）。
-    - 所有写操作经 `asyncio.Lock` 串行化，消除并发数据竞争（B7）。
-    - Agent 不在此持有：每次 `prepare` 按会话元数据重建无状态执行器（见 AR-1）。
+    - 所有写操作经 `asyncio.Lock` 串行化，消除并发数据竞争。
+    - Agent 不在此持有：每次 `prepare` 按会话元数据重建无状态执行器（见 ）。
     """
 
     def __init__(self, agent_factory=None):
@@ -163,14 +163,14 @@ class SessionManager:
     async def prepare(self, session_id: str, user_id: Optional[int]) -> CustomerServiceAgent:
         """发送前准备：加载/创建会话上下文 + 刷新活跃时间 + 惰性淘汰（排除当前会话）。
 
-        返回：按会话元数据重建的「无状态」Agent 执行器（不持有会话可变状态，见 AR-1）。
+        返回：按会话元数据重建的「无状态」Agent 执行器（不持有会话可变状态，见 ）。
         """
         async with self._lock:
             ctx = await self._load(session_id)
             if ctx is None:
                 ctx = SessionContext.new(session_id, user_id)
             elif user_id is not None:
-                # 后续消息若携带已登录身份，同步到会话元数据（F1 一致性）
+                # 后续消息若携带已登录身份，同步到会话元数据（ 一致性）
                 ctx.meta["user_id"] = user_id
             ctx.meta["last_message_at"] = _now_iso()
             await self._save(ctx)
@@ -198,7 +198,7 @@ class SessionManager:
             self._touch_index(session_id)
 
     async def get_conversation(self, session_id: str) -> List[Dict[str, Any]]:
-        """读取对话历史（B10：与 get_history 共用）。"""
+        """读取对话历史（：与 get_history 共用）。"""
         ctx = await self._load(session_id)
         return ctx.conversation if ctx is not None else []
 
@@ -219,7 +219,7 @@ class SessionManager:
                     self._index.pop(sid, None)
                     continue
                 info = ctx.meta
-                # F4：指定 user_id 时仅返回该用户的会话，实现用户隔离
+                # ：指定 user_id 时仅返回该用户的会话，实现用户隔离
                 if user_id is not None and info.get("user_id") != user_id:
                     continue
                 sessions.append({
@@ -257,7 +257,7 @@ SESSION_MANAGER = SessionManager()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 意图路由 + 处理器策略（AR-2 第一/二层）：handler 作为已注册策略对象。
+# 意图路由 + 处理器策略（ 第一/二层）：handler 作为已注册策略对象。
 # ─────────────────────────────────────────────────────────────────────────────
 @dataclass
 class HandlerContext:
@@ -374,7 +374,7 @@ class _RagHandler(IntentHandler):
             yield tool_res.get("response", "")
             return
         context = await rag_service.retrieve(ctx.content, top_k=3)
-        # MN-5：流式 RAG 生成包 observe.generation，与 send 路径共享追踪体系
+        # ：流式 RAG 生成包 observe.generation，与 send 路径共享追踪体系
         with observe.generation(
             name="rag-stream-generate",
             model=getattr(llm_service, "model", "unknown"),
@@ -388,7 +388,7 @@ class _LlmHandler(IntentHandler):
     handler_type = "llm"
 
     async def _build_messages(self, svc: "ChatService", ctx: HandlerContext) -> List[Dict[str, str]]:
-        # 读取最近 HISTORY_TURNS 轮对话（B5：存储的每条消息含 intent/sentiment 等额外字段，
+        # 读取最近 HISTORY_TURNS 轮对话（：存储的每条消息含 intent/sentiment 等额外字段，
         # 发送给 LLM 时必须映射为纯 {role, content}，避免多余字段污染输入）。
         history = await svc.session_manager.get_conversation(ctx.session_id)
         clean_history = [
@@ -408,7 +408,7 @@ class _LlmHandler(IntentHandler):
 
     async def run_stream(self, svc: "ChatService", ctx: HandlerContext):
         messages = await self._build_messages(svc, ctx)
-        # MN-5：流式 LLM 对话包 observe.generation，与 send 路径共享追踪体系
+        # ：流式 LLM 对话包 observe.generation，与 send 路径共享追踪体系
         with observe.generation(
             name="chat-stream",
             model=getattr(llm_service, "model", "unknown"),
@@ -419,7 +419,7 @@ class _LlmHandler(IntentHandler):
 
 
 class IntentRouter:
-    """意图路由器（AR-2 第一层）：按 handler_type 分发到已注册 handler。
+    """意图路由器（ 第一层）：按 handler_type 分发到已注册 handler。
 
     新增意图/处理器：向本路由注册一个 `IntentHandler` 实例即可，无需修改 ChatService 内部分发逻辑。
     """
@@ -447,7 +447,7 @@ intent_router.register("llm", _LlmHandler())
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 处理结果（CQ-2）
+# 处理结果
 # ─────────────────────────────────────────────────────────────────────────────
 @dataclass
 class _ProcessResult:
@@ -475,7 +475,7 @@ class ChatService:
             else:
                 session_manager = SessionManager(agent_factory=self.agent_factory)
         self.session_manager = session_manager
-        # 意图路由（AR-2）：默认复用模块级路由，可注入扩展。
+        # 意图路由：默认复用模块级路由，可注入扩展。
         self.router = intent_router
 
     async def create_session(
@@ -484,9 +484,9 @@ class ChatService:
         channel: str = "web",
         initial_message: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """创建新会话：生成 session_id → 经 SessionManager.prepare 落库会话上下文（CQ-1）。"""
+        """创建新会话：生成 session_id → 经 SessionManager.prepare 落库会话上下文。"""
         session_id = f"sess_{uuid.uuid4().hex[:12]}"
-        # CQ-1：删除原手搓临界区（_purge_expired/_ensure/_evict_lru 直触 _lock/_sessions）；
+        # ：删除原手搓临界区（_purge_expired/_ensure/_evict_lru 直触 _lock/_sessions）；
         # 单一临界区来源 = SessionManager.prepare。
         await self.session_manager.prepare(session_id, user_id)
 
@@ -542,7 +542,7 @@ class ChatService:
             },
         ) as root_span:
 
-            # 2) 核心处理（CQ-2 单一真相源）：意图+情感+分发，返回统一结果
+            # 2) 核心处理（ 单一真相源）：意图+情感+分发，返回统一结果
             proc = await self._core_process(session_id, content, user_id, agent, preferred_intent)
 
             # 3) 情感响应前缀（单源：_apply_sentiment_prefix）
@@ -555,7 +555,7 @@ class ChatService:
                 proc.quick_replies, proc.need_transfer,
             )
 
-            # 5) 持久化（B2/B5/B7）
+            # 5) 持久化（//）
             await self.session_manager.commit(session_id, user_msg, assistant_msg)
 
             if root_span is not None:
@@ -578,10 +578,10 @@ class ChatService:
         content_type: str = "text",
         preferred_intent: Optional[str] = None,
     ):
-        """流式处理用户消息，逐 token 产出 SSE 片段（P6 / CQ-2 强一致）。
+        """流式处理用户消息，逐 token 产出 SSE 片段（ / 强一致）。
 
         与 send_message 保持相同的意图识别/情感分析/分发/落库语义：
-        - 意图/情感 span 经 `_recognize_intent_and_sentiment` 共享（MN-5）；
+        - 意图/情感 span 经 `_recognize_intent_and_sentiment` 共享；
         - 同一 handler 的 `run_stream` 在 handler 内逐 token 产出；
         - 结束时以 `_build_messages_and_payload` 构造 done 事件，载荷与 send_message 完全一致。
         """
@@ -592,7 +592,7 @@ class ChatService:
             return f"data: {json.dumps({'type': event_type, **payload}, ensure_ascii=False)}\n\n"
 
         with observe.span(name="chat-stream-message", input={"session_id": session_id, "content": content}) as root_span:
-            # 意图识别 + 情感分析（MN-5：与 send 路径共用同一 span 来源）
+            # 意图识别 + 情感分析（：与 send 路径共用同一 span 来源）
             intent_result, (sent_type, sent_score) = await self._recognize_intent_and_sentiment(
                 content, user_id, preferred_intent
             )
@@ -608,12 +608,12 @@ class ChatService:
 
             response_text = ""
             try:
-                # 在 handler 内逐 token 产出（CQ-2：流式单一真相源）
+                # 在 handler 内逐 token 产出（：流式单一真相源）
                 async for piece in handler.run_stream(self, ctx):
                     response_text += piece
                     yield _sse("token", content=piece)
             except Exception as e:
-                # TC-3：工具/生成异常 → 产出 error 事件（不抛出，保证 SSE 正常结束）
+                # ：工具/生成异常 → 产出 error 事件（不抛出，保证 SSE 正常结束）
                 logger.error(f"流式处理异常: {e}")
                 yield _sse("error", message=str(e))
                 return
@@ -646,7 +646,7 @@ class ChatService:
                 need_transfer=need_transfer,
             )
 
-    # ── CQ-2：核心处理（非流式单一真相源） ──
+    # ── ：核心处理（非流式单一真相源） ──
     async def _core_process(
         self,
         session_id: str,
@@ -682,7 +682,7 @@ class ChatService:
             need_transfer=need_transfer,
         )
 
-    # ── MN-5：意图/情感 span 下沉（send/stream 共用同一来源） ──
+    # ── ：意图/情感 span 下沉（send/stream 共用同一来源） ──
     async def _recognize_intent_and_sentiment(
         self,
         content: str,
@@ -817,7 +817,7 @@ class ChatService:
         return mapping.get(intent_code, ["查订单", "商品咨询", "转人工"])
 
     async def get_history(self, session_id: str, page: int = 1, page_size: int = 20) -> Dict[str, Any]:
-        """获取对话历史（B10：对分页参数做非负/上限裁剪，作为路由 Query 约束的防御性兜底）"""
+        """获取对话历史（：对分页参数做非负/上限裁剪，作为路由 Query 约束的防御性兜底）"""
         try:
             page = max(1, int(page))
             page_size = max(1, min(int(page_size), 100))
@@ -829,7 +829,7 @@ class ChatService:
         end = start + page_size
         page_messages = all_messages[start:end]
 
-        # 转换为带 ID 的格式（B5：回读 intent/sentiment/sentiment_score）
+        # 转换为带 ID 的格式（：回读 intent/sentiment/sentiment_score）
         result = []
         for i, msg in enumerate(page_messages):
             result.append({
@@ -847,7 +847,7 @@ class ChatService:
         return {"items": result, "total": total, "page": page, "page_size": page_size}
 
     async def list_sessions(self, user_id: Optional[int] = None) -> Dict[str, Any]:
-        """获取会话列表（F4：传入 user_id 时按用户隔离）"""
+        """获取会话列表（：传入 user_id 时按用户隔离）"""
         return await self.session_manager.list_all(user_id=user_id)
 
     async def delete_session(self, session_id: str) -> bool:

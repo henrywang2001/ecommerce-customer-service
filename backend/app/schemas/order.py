@@ -1,4 +1,4 @@
-"""订单相关 Pydantic Schemas（F3 修复：对齐真实返回结构，提供契约校验）
+"""订单相关 Pydantic Schemas（ 修复：对齐真实返回结构，提供契约校验）
 
 原 OrderResponse 要求 id(int)/created_at(datetime) 等字段，与 Mock 数据及路由实际
 返回结构不一致，导致「有 schema 无契约」的脆弱状态。这里改为贴合实际返回（订单号

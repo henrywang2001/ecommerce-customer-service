@@ -71,7 +71,7 @@ class SentimentService:
         return total_score / word_count
 
     def _is_negated(self, text: str, word: str) -> bool:
-        """检查情感词是否被否定词修饰（B11 修复：改为情感词左侧局部窗口判定）。
+        """检查情感词是否被否定词修饰（ 修复：改为情感词左侧局部窗口判定）。
 
         原实现用「否定词在全文本首次出现」与「情感词首次出现」的全局字符距离，
         易误判远距离/伪否定。现仅考察情感词左侧固定窗口（默认 4 个字符）内是否存在
@@ -84,7 +84,7 @@ class SentimentService:
         return any(neg in left_window for neg in self.NEGATION_WORDS)
 
     def _rule_analysis(self, text: str) -> float:
-        """规则辅助分析（B4：负向修正，允许规则分为负）"""
+        """规则辅助分析（：负向修正，允许规则分为负）"""
         score = 0.0
         # 重复标点/字符可能表示强烈情绪（连续 3 个及以上）
         if re.findall(r'([!！?？])\1{2,}', text):
@@ -92,7 +92,7 @@ class SentimentService:
         # 全大写（英文）可能表示强调
         if re.search(r'[A-Z]{4,}', text):
             score += 0.15
-        # 感叹号数量 —— 仅在文本含正面词时才加分（B4：纯感叹号不虚高）
+        # 感叹号数量 —— 仅在文本含正面词时才加分（：纯感叹号不虚高）
         has_positive = any(pos in text for pos in self.POSITIVE_WORDS)
         exclaim_count = text.count("!") + text.count("！")
         if exclaim_count > 0 and has_positive:
@@ -100,12 +100,12 @@ class SentimentService:
         # 问号+感叹号混合（强烈不满）
         if re.search(r'[?？]+[!！]+|[!！]+[?？]+', text):
             score += 0.2
-        # 含负面词且出现连续/多个感叹号时，做负向修正（B4）
+        # 含负面词且出现连续/多个感叹号时，做负向修正
         has_negative = any(neg in text for neg in self.NEGATIVE_WORDS)
         multi_exclaim = bool(re.findall(r'([!！])\1{1,}', text)) or exclaim_count >= 2
         if has_negative and multi_exclaim:
             score -= 0.2
-        # 允许规则分为负，使强负面场景最终得分可转负（B4）
+        # 允许规则分为负，使强负面场景最终得分可转负
         return max(-0.5, score)
 
     def _score_to_type(self, score: float) -> SentimentType:

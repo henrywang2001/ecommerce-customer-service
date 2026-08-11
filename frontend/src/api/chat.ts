@@ -40,7 +40,7 @@ export const chatApi = {
 }
 
 /**
- * 流式发送消息（P6）：用 fetch + ReadableStream 解析 SSE，逐 token 回调。
+ * 流式发送消息：用 fetch + ReadableStream 解析 SSE，逐 token 回调。
  * 不使用 axios（拦截器对流式响应不友好），手动携带 Authorization。
  */
 export async function streamSend(

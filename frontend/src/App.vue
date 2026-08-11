@@ -155,7 +155,7 @@ body.dark .skeleton-block {
   background-size: 200% 100%;
 }
 
-/* ===== 尊重 prefers-reduced-motion（U13）：关闭非必要动画/过渡，降低眩晕与功耗 ===== */
+/* ===== 尊重 prefers-reduced-motion：关闭非必要动画/过渡，降低眩晕与功耗 ===== */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.001ms !important;

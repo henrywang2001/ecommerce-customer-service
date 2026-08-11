@@ -1,4 +1,4 @@
-"""ChromaDB 客户端单例（P7 修复）
+"""ChromaDB 客户端单例（ 修复）
 
 rag_service 与 vector_store 共用同一个 PersistentClient 实例，避免两个客户端
 指向同一持久化目录导致的 SQLite 锁竞争（重复创建会引发 database is locked 等错误）。
@@ -12,8 +12,8 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 _client: Optional["chromadb.Client"] = None
 
-# P10 修复：缓存「当前 collection 是否非空」标志，避免每次检索都执行一次全量
-# collection.count() 扫描（随文档数增大变重的额外开销）。add/delete 文档后失效，
+# 修复：缓存「当前 collection 是否非空」标志，避免每次检索都执行一次全量
+# collection.count 扫描（随文档数增大变重的额外开销）。add/delete 文档后失效，
 # 下次检索惰性重算一次。None 表示尚未计算。
 _collection_has_docs: Optional[bool] = None
 

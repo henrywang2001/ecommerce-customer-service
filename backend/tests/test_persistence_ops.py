@@ -1,4 +1,4 @@
-"""AR-3 / MN-2 / MN-3 / MN-4 / PF-4 相关测试：持久化、探针、指标、请求 ID。
+""" / / / / 相关测试：持久化、探针、指标、请求 ID。
 
 依赖 conftest._isolate_external_env 已强制 cache→内存、observe→no-op。
 DB 层是否「真读写」由 test_db_layer_persists_and_reads 用临时 SQLite 引擎证明
@@ -23,7 +23,7 @@ def client():
         yield c
 
 
-# ───────────────────────── AR-3：DB 层真实读写（非 no-op） ─────────────────────────
+# ───────────────────────── ：DB 层真实读写（非 no-op） ─────────────────────────
 def test_db_layer_persists_and_reads(tmp_path):
     # 用临时文件型 SQLite 替换 user_service 引擎，验证 DB 层真实读写（非内存 no-op）
     db_file = tmp_path / "test_users.db"
@@ -92,7 +92,7 @@ def test_db_layer_persists_and_reads(tmp_path):
                 pass
 
 
-# ───────────────────────── AR-3：内存兜底路径（DB 不可达时不阻断请求） ─────────────────────────
+# ───────────────────────── ：内存兜底路径（DB 不可达时不阻断请求） ─────────────────────────
 def test_memory_fallback_register_and_login(monkeypatch):
     # 强制走内存兜底，验证 DB 不可达时功能仍可用
     monkeypatch.setattr(user_service, "_db_is_enabled", lambda: False)
@@ -110,7 +110,7 @@ def test_memory_fallback_register_and_login(monkeypatch):
         user_service.create_user(UserCreateRequest(username="memuser", password="Mem@123"))
 
 
-# ───────────────────────── MN-2：存活 / 就绪探针 ─────────────────────────
+# ───────────────────────── ：存活 / 就绪探针 ─────────────────────────
 def test_healthz(client):
     r = client.get("/healthz")
     assert r.status_code == 200
@@ -128,7 +128,7 @@ def test_readyz_structure(client):
         assert key in data["dependencies"]
 
 
-# ───────────────────────── MN-3：指标 / 状态 ─────────────────────────
+# ───────────────────────── ：指标 / 状态 ─────────────────────────
 def test_metrics_endpoint(client):
     r = client.get("/metrics")
     assert r.status_code == 200
@@ -146,7 +146,7 @@ def test_stats_endpoint(client):
     assert "hit_rate" in data["cache"]
 
 
-# ───────────────────────── MN-4：请求 ID ─────────────────────────
+# ───────────────────────── ：请求 ID ─────────────────────────
 def test_request_id_header_present(client):
     r = client.get("/healthz")
     assert "X-Request-ID" in r.headers

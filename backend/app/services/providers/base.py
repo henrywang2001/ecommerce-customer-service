@@ -1,14 +1,14 @@
-"""Provider 抽象层（EX-3）— LLM / Embedding / VectorStore 的 ABC 与配置驱动选择。
+"""Provider 抽象层— LLM / Embedding / VectorStore 的 ABC 与配置驱动选择。
 
 设计目标：把「用哪家厂商的 LLM / Embedding / 向量库」从业务逻辑中解耦。
 - 业务层（chat_service / rag_service / agent）只依赖本文件的 ABC 接口；
 - 具体厂商实现（DeepSeek / DashScope / Chroma ...）通过 config 选择；
-- 新增厂商 = 新增一个 ABC 子类 + 在对应 ``get_*_provider()`` 工厂里加一个分支。
+- 新增厂商 = 新增一个 ABC 子类 + 在对应 ``get_*_provider`` 工厂里加一个分支。
 
 当前交付（受任务范围约束，其余厂商列为 follow-up）：
 - ABC：``LLMProvider`` / ``EmbeddingProvider`` / ``VectorStoreProvider``
 - 每种类型一个具体实现（与现有单例对齐）：
-  - LLM    → ``LLMService``（DeepSeek，兼容 OpenAI Chat Completions 协议）
+  - LLM → ``LLMService``（DeepSeek，兼容 OpenAI Chat Completions 协议）
   - Embedding → ``EmbeddingService``（DashScope / 千问 text-embedding）
   - VectorStore → ``ChromaVectorStoreProvider``（委派给现有 rag.vector_store 单例）
 - 配置驱动选择：``settings.LLM_PROVIDER`` / ``EMBEDDING_PROVIDER`` / ``VECTORSTORE_PROVIDER``
@@ -81,8 +81,8 @@ def get_llm_provider() -> LLMProvider:
         from app.services.llm_service import LLMService
 
         return LLMService()
-    # elif name == "openai": return OpenAILLMProvider()
-    # elif name == "claude": return ClaudeLLMProvider()
+    # elif name == "openai": return OpenAILLMProvider
+    # elif name == "claude": return ClaudeLLMProvider
     logger.warning("未知 LLM_PROVIDER=%s，回退 deepseek", name)
     from app.services.llm_service import LLMService
 
@@ -99,7 +99,7 @@ def get_embedding_provider() -> EmbeddingProvider:
         from app.services.embedding_service import EmbeddingService
 
         return EmbeddingService()
-    # elif name == "openai": return OpenAIEmbeddingProvider()
+    # elif name == "openai": return OpenAIEmbeddingProvider
     logger.warning("未知 EMBEDDING_PROVIDER=%s，回退 dashscope", name)
     from app.services.embedding_service import EmbeddingService
 
@@ -116,7 +116,7 @@ def get_vector_store() -> VectorStoreProvider:
         from app.services.providers.vectorstore import ChromaVectorStoreProvider
 
         return ChromaVectorStoreProvider()
-    # elif name == "milvus": return MilvusVectorStoreProvider()
+    # elif name == "milvus": return MilvusVectorStoreProvider
     logger.warning("未知 VECTORSTORE_PROVIDER=%s，回退 chroma", name)
     from app.services.providers.vectorstore import ChromaVectorStoreProvider
 

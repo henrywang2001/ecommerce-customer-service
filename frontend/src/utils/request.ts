@@ -27,7 +27,7 @@ request.interceptors.response.use(
     const status = error?.response?.status
     const data = error?.response?.data
 
-    // 401：令牌缺失/失效 → 清空登录态并跳转到登录页（F6）
+    // 401：令牌缺失/失效 → 清空登录态并跳转到登录页
     if (status === 401) {
       localStorage.removeItem('token')
       sessionStorage.removeItem('token')

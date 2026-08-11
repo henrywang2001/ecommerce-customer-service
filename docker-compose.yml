@@ -1,12 +1,12 @@
 # 电商智能客服系统 —— 容器编排
 # 服务：backend / frontend / redis / nginx（边缘网关）
 # 说明：
-#   - backend 通过 DATABASE_URL 连接 MySQL；若 MySQL 不可达，user_service 自动回退内存兜底，
-#     不阻断启动（与本地运行行为一致）。如需持久化，可在下方补充一个 mysql 服务并将
-#     DATABASE_URL 指向它。
-#   - nginx 健康检查指向后端 /readyz。
-#   - 前端构建产物由 frontend 服务内的 nginx 静态托管；边缘 nginx 反向代理 /api 到 backend、
-#     其余路径代理到 frontend。
+# - backend 通过 DATABASE_URL 连接 MySQL；若 MySQL 不可达，user_service 自动回退内存兜底，
+# 不阻断启动（与本地运行行为一致）。如需持久化，可在下方补充一个 mysql 服务并将
+# DATABASE_URL 指向它。
+# - nginx 健康检查指向后端 /readyz。
+# - 前端构建产物由 frontend 服务内的 nginx 静态托管；边缘 nginx 反向代理 /api 到 backend、
+# 其余路径代理到 frontend。
 services:
   redis:
     image: redis:7-alpine

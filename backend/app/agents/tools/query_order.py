@@ -1,4 +1,4 @@
-"""订单查询工具（F5 修复：订单数据统一从 app.data.mock_data 读取，杜绝双源漂移）"""
+"""订单查询工具（ 修复：订单数据统一从 app.data.mock_data 读取，杜绝双源漂移）"""
 from typing import Dict, Any, List, Optional
 import re
 import logging
@@ -60,7 +60,7 @@ class QueryOrderTool(BaseTool):
         return {"success": True, "response": self._format_order_detail(order), "order": order}
 
     async def _query_user_orders(self, user_id: Optional[int]) -> Dict[str, Any]:
-        # F5：直接由单一数据源 ORDERS 派生，不再维护一份独立写死的列表
+        # ：直接由单一数据源 ORDERS 派生，不再维护一份独立写死的列表
         mock_list = [
             {
                 "order_no": o["order_no"],

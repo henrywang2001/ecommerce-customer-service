@@ -1,4 +1,4 @@
-"""TC-6 — 缓存 / 限流集成测试（@pytest.mark.integration）。
+""" — 缓存 / 限流集成测试（@pytest.mark.integration）。
 
 环境说明（重要）：
 沙箱无外网，``miniredis`` 无法通过 pip 安装（已尝试，PyPI 不可达）。
@@ -8,7 +8,7 @@
 连接失败 fail-open 降级（且降级被记录、非静默）。
 
 若后续联网安装 ``miniredis``，可把 ``_make_from_url`` 改为返回连向
-``miniredis.Miniredis().host:port`` 的客户端即可，测试契约不变。
+``miniredis.Miniredis.host:port`` 的客户端即可，测试契约不变。
 """
 import asyncio
 import logging

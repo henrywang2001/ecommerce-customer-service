@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 class LLMService(LLMProvider):
-    """大语言模型服务 — DeepSeek（EX-3: 即 LLMProvider 的 DeepSeek 具体实现）"""
+    """大语言模型服务 — DeepSeek（: 即 LLMProvider 的 DeepSeek 具体实现）"""
 
     def __init__(self, client=None):
         self.api_key = settings.LLM_API_KEY
@@ -168,7 +168,7 @@ class LLMService(LLMProvider):
         temperature: float = 0.1,
         max_tokens: Optional[int] = None,
     ) -> Optional[dict]:
-        """生成 JSON 结构化输出（P14：意图分类等短输出可传较小 max_tokens 降本提速）"""
+        """生成 JSON 结构化输出（：意图分类等短输出可传较小 max_tokens 降本提速）"""
         response = await self.generate(
             prompt + "\n请仅返回JSON格式，不要包含任何其他内容。",
             temperature=temperature,
@@ -187,7 +187,7 @@ class LLMService(LLMProvider):
             return None
 
     async def _stream_post(self, messages: List[Dict[str, str]], temperature: Optional[float] = None):
-        """内部：以 stream=True 调用 LLM，逐 token 产出（P6）。"""
+        """内部：以 stream=True 调用 LLM，逐 token 产出。"""
         temp = temperature or self.temperature
         payload = {
             "model": self.model,
@@ -225,12 +225,12 @@ class LLMService(LLMProvider):
                 yield piece
 
     async def chat_stream(self, messages: List[Dict[str, str]], temperature: Optional[float] = None):
-        """多轮对话流式输出（P6）。"""
+        """多轮对话流式输出。"""
         async for piece in self._stream_post(messages, temperature):
             yield piece
 
     async def generate_stream(self, prompt: str, temperature: Optional[float] = None):
-        """单轮生成流式输出（P6）。"""
+        """单轮生成流式输出。"""
         async for piece in self._stream_post([{"role": "user", "content": prompt}], temperature):
             yield piece
 

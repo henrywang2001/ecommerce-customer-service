@@ -259,7 +259,7 @@ onMounted(loadCategories)
 }
 .kb-card:hover .kb-actions,
 .kb-card:focus-within .kb-actions { opacity: 1; }
-/* 触屏设备无 hover 态，操作按钮常驻可见（U9） */
+/* 触屏设备无 hover 态，操作按钮常驻可见 */
 @media (hover: none) {
   .kb-actions { opacity: 1; }
 }

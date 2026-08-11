@@ -5,7 +5,7 @@ import request from '@/utils/request'
 import { useAuthStore } from '@/stores/auth'
 import type { Message, SentimentType, SessionInfo } from '@/types/chat'
 
-// ===== 本地持久化常量（B1） =====
+// ===== 本地持久化常量 =====
 const CACHE_KEY = 'ecommerce-chat-cache-v1'
 const MAX_CACHED_SESSIONS = 10
 const MAX_MESSAGES_PER_SESSION = 200
@@ -65,10 +65,10 @@ export const useChatStore = defineStore('chat', () => {
   // ===== Actions =====
   async function initSession() {
     isTyping.value = false
-    // F1 幂等守卫：已有激活会话则直接返回，避免重复欢迎语/重复建会话
+    // 幂等守卫：已有激活会话则直接返回，避免重复欢迎语/重复建会话
     if (activeSessionId.value) return
     try {
-      // F1：携带已登录用户身份，使后端可按用户隔离会话/强制 requires_auth
+      // ：携带已登录用户身份，使后端可按用户隔离会话/强制 requires_auth
       const authStore = useAuthStore()
       const result: any = await chatApi.createSession({ user_id: authStore.user?.id })
       const sid = result.session.session_id
@@ -125,7 +125,7 @@ export const useChatStore = defineStore('chat', () => {
     }
     buf.push(userMsg)
     if (sid === sessionId.value && messages.value !== buf) messages.value = buf
-    // B1 健壮性：用户消息落盘立即持久化，避免机器人回复前刷新导致输入丢失
+    // 健壮性：用户消息落盘立即持久化，避免机器人回复前刷新导致输入丢失
     persistToLocal()
     isTyping.value = true
 
@@ -196,7 +196,7 @@ export const useChatStore = defineStore('chat', () => {
     }
     buf.push(userMsg)
     if (sid === sessionId.value && messages.value !== buf) messages.value = buf
-    // B1 健壮性：用户消息落盘立即持久化，避免机器人回复前刷新导致输入丢失
+    // 健壮性：用户消息落盘立即持久化，避免机器人回复前刷新导致输入丢失
     persistToLocal()
     isTyping.value = true
 
@@ -263,7 +263,7 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  // F8：历史合并——按消息 id 去重，并按时间排序，避免本地缓存与后端历史重复或乱序
+  // ：历史合并——按消息 id 去重，并按时间排序，避免本地缓存与后端历史重复或乱序
   function mergeMessages(existing: Message[], incoming: Message[]): Message[] {
     const byId = new Map<string, Message>()
     for (const m of existing) byId.set(m.id, m)
@@ -320,7 +320,7 @@ export const useChatStore = defineStore('chat', () => {
     isTyping.value = false
     activeSessionId.value = id
     sessionId.value = id
-    // 优先从本地缓存恢复（B1），缺失则回源后端历史接口并与本地缓冲去重合并（F8）
+    // 优先从本地缓存恢复，缺失则回源后端历史接口并与本地缓冲去重合并
     const cached = messagesBySession.value[id]
     if (cached && cached.length) {
       messages.value = cached
@@ -337,8 +337,8 @@ export const useChatStore = defineStore('chat', () => {
     persistToLocal()
   }
 
-  // ===== 本地持久化（B1） =====
-  // P13：节流（带尾随补偿）——避免每次状态变更都同步序列化全部会话，降低主线程卡顿
+  // ===== 本地持久化 =====
+  // ：节流（带尾随补偿）——避免每次状态变更都同步序列化全部会话，降低主线程卡顿
   let _lastPersist = 0
   let _persistTimer: ReturnType<typeof setTimeout> | null = null
   const PERSIST_INTERVAL = 400
@@ -382,7 +382,7 @@ export const useChatStore = defineStore('chat', () => {
         activeSessionId: activeSessionId.value,
         sessions: sessions.value,
         messagesBySession: messagesBySession.value,
-        // F7：持久化快捷回复，刷新后可直接恢复（无需再发一条消息才出现）
+        // ：持久化快捷回复，刷新后可直接恢复（无需再发一条消息才出现）
         quickReplies: quickReplies.value,
       }
       localStorage.setItem(CACHE_KEY, JSON.stringify(payload))
@@ -416,7 +416,7 @@ export const useChatStore = defineStore('chat', () => {
       const data = JSON.parse(raw)
       if (!data || typeof data !== 'object') return false
       sessions.value = Array.isArray(data.sessions) ? data.sessions : []
-      // F7：恢复快捷回复，避免刷新后快捷回复消失
+      // ：恢复快捷回复，避免刷新后快捷回复消失
       quickReplies.value = Array.isArray(data.quickReplies) ? data.quickReplies : []
       messagesBySession.value =
         data.messagesBySession && typeof data.messagesBySession === 'object'
@@ -469,7 +469,7 @@ export const useChatStore = defineStore('chat', () => {
     persistToLocal()
   }
 
-  // F2：提交会话满意度评价（接线此前未使用的 chatApi.rateSession）
+  // ：提交会话满意度评价（接线此前未使用的 chatApi.rateSession）
   async function rateSession(score: number, comment?: string) {
     if (!sessionId.value) return
     try {

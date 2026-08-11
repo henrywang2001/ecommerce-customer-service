@@ -1,4 +1,4 @@
-"""认证 API 路由 — 登录 / 注册 / 当前用户 (F6)"""
+"""认证 API 路由 — 登录 / 注册 / 当前用户 """
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.core.security import create_access_token, get_current_user

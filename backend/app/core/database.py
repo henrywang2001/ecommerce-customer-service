@@ -16,7 +16,7 @@ class Base(DeclarativeBase):
 def _get_engine():
     global _engine
     if _engine is None:
-        # MN-7b：pool_pre_ping 在每次从池检出连接前做一次轻量探测，
+        # ：pool_pre_ping 在每次从池检出连接前做一次轻量探测，
         # 避免拿到已被服务端关闭的「死连接」导致随机报错；
         # connect_args 设置连接超时，避免 MySQL 不可达时无限挂起
         # （落库失败时由调用方回退内存模式，绝不阻断请求）。

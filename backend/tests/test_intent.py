@@ -1,12 +1,12 @@
-"""TC-4 意图识别服务测试。
+""" 意图识别服务测试。
 
-验证意图识别核心链路（EX-1 声明式配置落地后）：
+验证意图识别核心链路（ 声明式配置落地后）：
 - 关键词匹配：`退款` → refund_request（confidence≈0.7）
 - preferred_intent 直通车：直接采用、不调用 LLM
 - recognize(None) / recognize("") → fallback 兜底
 - `退款多久到账 ORDER...` 抽取 order_no 实体
 
-测试手法（对应 TC-4 要求）：通过构造函数注入 fake LLM（mock 其 ``generate_json``）
+测试手法（对应 要求）：通过构造函数注入 fake LLM（mock 其 ``generate_json``）
 使测试离线、不联网；**绝不整体替换 ``recognize``**，始终调用真实 ``IntentService.recognize``。
 """
 import asyncio
