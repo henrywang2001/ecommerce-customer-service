@@ -53,7 +53,18 @@ class VectorStore:
         query_embedding: List[float],
         top_k: int = 5,
     ) -> List[Dict[str, Any]]:
-        """向量相似度检索"""
+        """向量相似度检索 — 计分收口（AR-5）
+
+        集中处理：零向量 / 降级检测、Chroma 查询、distance → [0,1] 归一化。
+        rag_service 只需合并「向量结果 + 关键词结果」，不再直接依赖 chromadb 内部字段。
+
+        返回形态与 rag_service 内置库结果对齐：{"id", "category", "question", "answer", "score"}
+        """
+        # ── 零向量 / 降级处理：embedding 不可用时（全 0 向量）直接跳过向量检索，
+        #    避免用无意义向量污染结果，调用方回退到关键词检索。置于最前，连 Chroma 客户端都不创建。
+        if not query_embedding or all(v == 0.0 for v in query_embedding):
+            return []
+
         collection = await self._get_collection()
         # P10：用带缓存的「是否非空」判断替代每次检索都执行的 collection.count()
         if collection is None or not await collection_has_docs(collection):
@@ -63,17 +74,42 @@ class VectorStore:
                 query_embeddings=[query_embedding],
                 n_results=top_k,
             )
-            output = []
-            if results["ids"] and results["ids"][0]:
-                for i, doc_id in enumerate(results["ids"][0]):
-                    metadata = results["metadatas"][0][i] if results["metadatas"] else {}
-                    output.append({
-                        "id": doc_id,
-                        "score": 1.0 - (results["distances"][0][i] if results.get("distances") else 0.1 * i),
-                        "document": results["documents"][0][i] if results["documents"] else "",
-                        "metadata": metadata,
-                    })
-            return output
+            if not results["ids"] or not results["ids"][0]:
+                return []
+
+            # 1) 收集原始字段与 distance，暂存后统一归一化
+            raw_items: List[Dict[str, Any]] = []
+            distances: List[float] = []
+            for i, doc_id in enumerate(results["ids"][0]):
+                metadata = results["metadatas"][0][i] if results["metadatas"] else {}
+                distance = (
+                    results["distances"][0][i]
+                    if results.get("distances")
+                    else 0.1 * i
+                )
+                raw_items.append({
+                    "id": doc_id,
+                    "category": metadata.get("category", ""),
+                    "question": metadata.get("question", ""),
+                    "answer": (
+                        results["documents"][0][i]
+                        if results["documents"]
+                        else ""
+                    ),
+                })
+                distances.append(distance)
+
+            # 2) 对本次查询返回的 Chroma 结果集做 min-max 归一化到 [0,1]
+            #    （最近→1.0，最远→0.0），使其与内置库关键词分数（0.3~1.0）同量纲，
+            #    合并排序时向量命中能合理上浮。
+            #    不用 1/(1+distance)：本数据所有距离都在 ~万级，该式会把所有向量分数
+            #    压成 ~1e-5 且几乎无差异，等于没修。
+            dmin = min(distances)
+            dmax = max(distances)
+            span = dmax - dmin
+            for item, distance in zip(raw_items, distances):
+                item["score"] = 1.0 if span == 0 else 1.0 - (distance - dmin) / span
+            return raw_items
         except Exception as e:
             logger.error(f"向量检索失败: {e}")
             return []

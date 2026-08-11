@@ -9,8 +9,11 @@ from app.services.embedding_service import embedding_service as _default_embeddi
 from app.services.llm_service import llm_service
 from app.services.observe_service import observe
 from app.rag.vector_store import vector_store
-from app.rag.chroma_client import collection_has_docs, invalidate_collection_cache
+from app.rag.chroma_client import invalidate_collection_cache
 from app.utils.cache import cache as _default_cache
+
+# 默认注入的向量存储单例（AR-5：向量计分已收口到 VectorStore.search，rag_service 仅做合并）
+_default_vector_store = vector_store
 
 logger = logging.getLogger(__name__)
 
@@ -158,14 +161,75 @@ BUILT_IN_KNOWLEDGE: List[Dict[str, Any]] = [
 ]
 
 
+def _tokenize(text: str) -> List[str]:
+    """中文友好的轻量分词（B6 修复）
+
+    英文/数字按词切分；中文按「单字 + 相邻二字 bigram」展开，
+    使整句中文也能与知识库问题/关键词逐字、逐段匹配，解决原空白切分
+    导致中文整句成一个 token、几乎不得分的问题。
+    """
+    text = (text or "").lower()
+    tokens: List[str] = []
+    for w in re.findall(r"[a-z0-9]+", text):
+        tokens.append(w)
+    for seg in re.findall(r"[\u4e00-\u9fff]+", text):
+        for ch in seg:
+            tokens.append(ch)
+        for i in range(len(seg) - 1):
+            tokens.append(seg[i:i + 2])
+    return tokens
+
+
+# ── PF-6：关键词倒排 / 加权索引（resident）──
+# 启动时把 BUILT_IN_KNOWLEDGE 的「问题」一次性分词，构建 词语 → 文档下标 的倒排索引；
+# 同时预存每篇文档的关键词列表与分类文本，使每次检索不再对整库做分词 / lower / split，
+# _keyword_search 直接查索引得到召回与计分。文档增删后调用 _rebuild_keyword_index() 重建。
+_KEYWORD_INDEX: Dict[str, Any] = {"token_index": {}, "docs": []}
+
+
+def _build_keyword_index(kb_list: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """基于知识库构建 resident 倒排 / 加权索引（不依赖实例状态，便于单测）。"""
+    token_index: Dict[str, List[int]] = {}
+    docs: List[Dict[str, Any]] = []
+    for i, kb in enumerate(kb_list):
+        question_lower = kb["question"].lower()
+        # 问题分词（去重）后倒排：词语 → 文档下标列表。
+        # 用 set 去重，确保同一词语在同一文档中只计一次命中（与原 hit 计数等价）。
+        for tok in set(_tokenize(question_lower)):
+            if not tok:
+                continue
+            token_index.setdefault(tok, []).append(i)
+        docs.append({
+            "id": kb["id"],
+            "category": kb["category"],
+            "question": kb["question"],
+            "answer": kb["answer"],
+            # 关键词（显式）与分类文本预存，检索时做子串匹配（与原实现等价）
+            "keywords_list": kb["keywords"].lower().split(),
+            "category_text": kb["category"].lower(),
+        })
+    return {"token_index": token_index, "docs": docs}
+
+
+def _rebuild_keyword_index() -> None:
+    """知识库增删后调用：基于最新 BUILT_IN_KNOWLEDGE 重建索引（更新模块级 _KEYWORD_INDEX）。"""
+    global _KEYWORD_INDEX
+    _KEYWORD_INDEX = _build_keyword_index(BUILT_IN_KNOWLEDGE)
+
+
+# 启动时构建（resident）
+_KEYWORD_INDEX = _build_keyword_index(BUILT_IN_KNOWLEDGE)
+
+
 class RAGService:
     """检索增强生成服务 — ChromaDB + 千问 Embedding"""
 
-    def __init__(self, cache=None, embedding=None):
-        # 默认复用模块级全局单例，保持缓存/embedding 行为一致；
-        # 注入 fake cache / fake embedding 即可在测试中离线验证（无需 Redis / 联网）。
+    def __init__(self, cache=None, embedding=None, vector_store=None):
+        # 默认复用模块级全局单例，保持缓存/embedding/向量存储行为一致；
+        # 注入 fake 依赖即可在测试中离线验证（无需 Redis / 联网 / Chroma）。
         self.cache = cache if cache is not None else _default_cache
         self.embedding = embedding if embedding is not None else _default_embedding
+        self.vector_store = vector_store if vector_store is not None else _default_vector_store
 
     async def _get_chroma(self):
         """懒加载 ChromaDB 客户端（P7 修复：复用全局单例，避免同目录多客户端锁竞争）"""
@@ -224,74 +288,18 @@ class RAGService:
                 logger.info(f"RAG 检索命中结果缓存: {query[:50]}...")
                 return cached
 
-            chroma_results: List[Dict[str, Any]] = []
-            chroma = await self._get_chroma()
-            # 检测零向量：embedding 不可用时（返回全 0 向量）不再做向量检索，避免污染结果
-            if chroma is not None:
-                # ── PF-1/PF-5: embedding 缓存（命中则跳过远程 embedding 调用）──
-                # 键含 KB 版本号 + 归一化查询；知识库变更后旧版本 embedding 键自动 orphan
-                emb_key = _make_emb_key(query)
-                query_embedding = await self.cache.get(emb_key)
-                if query_embedding is None:
-                    query_embedding = await self.embedding.encode_single(query)
-                    await self.cache.set(emb_key, query_embedding, expire=3600)
-                is_zero = all(v == 0.0 for v in query_embedding)
-            else:
-                is_zero = False
-            if chroma is not None and not is_zero:
-                try:
-                    collection = chroma.get_or_create_collection(
-                        name=settings.CHROMA_COLLECTION,
-                    )
-                    # P10：用带缓存的「是否非空」判断替代每次检索都执行的 collection.count()
-                    if await collection_has_docs(collection):
-                        chroma_raw = collection.query(
-                            query_embeddings=[query_embedding],
-                            n_results=top_k,
-                        )
-                        if chroma_raw["ids"] and chroma_raw["ids"][0]:
-                            # 1) 先收集每条结果的原始 distance（distance 缺失时回退 0.1*i），
-                            #    连同文档字段一起暂存，稍后统一做归一化。
-                            raw_items: List[Dict[str, Any]] = []
-                            distances: List[float] = []
-                            for i, doc_id in enumerate(chroma_raw["ids"][0]):
-                                metadata = (
-                                    chroma_raw["metadatas"][0][i]
-                                    if chroma_raw["metadatas"]
-                                    else {}
-                                )
-                                distance = (
-                                    chroma_raw["distances"][0][i]
-                                    if chroma_raw.get("distances")
-                                    else 0.1 * i
-                                )
-                                raw_items.append({
-                                    "id": doc_id,
-                                    "category": metadata.get("category", ""),
-                                    "question": metadata.get("question", ""),
-                                    "answer": (
-                                        chroma_raw["documents"][0][i]
-                                        if chroma_raw["documents"]
-                                        else ""
-                                    ),
-                                })
-                                distances.append(distance)
+            # ── PF-1/PF-5: embedding 缓存（命中则跳过远程 embedding 调用）──
+            # 键含 KB 版本号 + 归一化查询；知识库变更后旧版本 embedding 键自动 orphan
+            emb_key = _make_emb_key(query)
+            query_embedding = await self.cache.get(emb_key)
+            if query_embedding is None:
+                query_embedding = await self.embedding.encode_single(query)
+                await self.cache.set(emb_key, query_embedding, expire=3600)
 
-                            # 2) 对本次查询返回的 Chroma 结果集做 min-max 归一化到 [0,1]
-                            #    （最近→1.0，最远→0.0），使其与内置库关键词分数（0.3~1.0）
-                            #    同量纲，合并排序时向量命中能合理上浮。
-                            #    说明：不用 1/(1+distance) —— 本数据所有距离都在 ~2万级，
-                            #    该式会把所有向量分数压成 ~4e-5 且几乎无差异，等于没修。
-                            dmin = min(distances)
-                            dmax = max(distances)
-                            span = dmax - dmin
-                            for item, distance in zip(raw_items, distances):
-                                item["score"] = (
-                                    1.0 if span == 0 else 1.0 - (distance - dmin) / span
-                                )
-                                chroma_results.append(item)
-                except Exception as e:
-                    logger.warning(f"ChromaDB 查询失败: {e}")
+            # ── AR-5：向量检索与计分全部收口到 VectorStore.search ──
+            # 零向量 / Chroma 不可用 / 空集合 等降级情形下返回 []，本方法回退到关键词检索，
+            # 不再直接依赖 chromadb 内部字段（distance / metadata / documents 等）。
+            chroma_results = await self.vector_store.search(query_embedding, top_k)
 
             # 始终基于内置知识库做关键词检索，保证内置知识任何情况下可检索
             builtin_results = self._keyword_search(query, top_k, filters)
@@ -328,47 +336,50 @@ class RAGService:
         merged = sorted(by_id.values(), key=lambda x: x["score"], reverse=True)
         return merged[:top_k]
 
-    def _tokenize(self, text: str) -> List[str]:
-        """中文友好的轻量分词（B6 修复）
-
-        英文/数字按词切分；中文按「单字 + 相邻二字 bigram」展开，
-        使整句中文也能与知识库问题/关键词逐字、逐段匹配，解决原空白切分
-        导致中文整句成一个 token、几乎不得分的问题。
-        """
-        text = (text or "").lower()
-        tokens: List[str] = []
-        for w in re.findall(r"[a-z0-9]+", text):
-            tokens.append(w)
-        for seg in re.findall(r"[\u4e00-\u9fff]+", text):
-            for ch in seg:
-                tokens.append(ch)
-            for i in range(len(seg) - 1):
-                tokens.append(seg[i:i + 2])
-        return tokens
-
     def _keyword_search(self, query: str, top_k: int, filters: Optional[Dict] = None) -> List[Dict[str, Any]]:
-        """基于关键词的内置知识库检索（B6 修复：中文逐字/bigram 召回）"""
+        """基于关键词的内置知识库检索（PF-6：改查 resident 倒排索引，与原实现等价）
+
+        召回与计分逻辑与原实现完全一致：
+        - 关键词（显式）子串命中 → +0.4 / 个；
+        - 问题分词命中 → +0.8 * (命中查询词数 / 查询词总数)；
+        - 分类子串命中 → +0.5；
+        - 最终 score 截断到 [0,1]；按分数降序返回 top_k。
+        区别在于：问题的分词在启动时已预置进 _KEYWORD_INDEX，本方法只查索引，
+        不再对整库做逐文档分词。
+        """
         query_lower = query.lower()
+        q_token_set = set(_tokenize(query_lower)) if query_lower else set()
+        # 由倒排索引统计每个文档命中的查询词数（= |q_token_set ∩ 文档问题词集|，与原 t in q_text 等价）
+        hit_counts: Dict[int, int] = {}
+        token_index = _KEYWORD_INDEX["token_index"]
+        for tok in q_token_set:
+            for di in token_index.get(tok, ()):
+                hit_counts[di] = hit_counts.get(di, 0) + 1
+
         scored = []
-        q_token_set = set(self._tokenize(query_lower))
-        for kb in BUILT_IN_KNOWLEDGE:
-            if filters and filters.get("category") and kb["category"] != filters["category"]:
+        for i, doc in enumerate(_KEYWORD_INDEX["docs"]):
+            if filters and filters.get("category") and doc["category"] != filters["category"]:
                 continue
             score = 0.0
-            q_text = kb["question"].lower()
-            kw_text = kb["keywords"].lower()
-            cat_text = kb["category"].lower()
-            for kw in kw_text.split():
+            # 显式关键词子串匹配（原：kw in query_lower → +0.4）
+            for kw in doc["keywords_list"]:
                 if kw and kw in query_lower:
                     score += 0.4
+            # 问题分词命中（原：0.8 * hit / len(q_token_set)）
             if q_token_set:
-                hit = sum(1 for t in q_token_set if t and t in q_text)
+                hit = hit_counts.get(i, 0)
                 score += 0.8 * (hit / len(q_token_set))
-            if cat_text and cat_text in query_lower:
+            # 分类命中（原：category_text in query_lower → +0.5）
+            if doc["category_text"] and doc["category_text"] in query_lower:
                 score += 0.5
             if score > 0:
-                item = kb.copy()
-                item["score"] = min(score, 1.0)
+                item = {
+                    "id": doc["id"],
+                    "category": doc["category"],
+                    "question": doc["question"],
+                    "answer": doc["answer"],
+                    "score": min(score, 1.0),
+                }
                 scored.append(item)
         scored.sort(key=lambda x: x["score"], reverse=True)
         return scored[:top_k]
@@ -471,6 +482,8 @@ class RAGService:
                 "answer": answer,
                 "keywords": keywords,
             })
+            # PF-6：内置库变更后重建关键词倒排索引，使新文档可被检索召回
+            _rebuild_keyword_index()
 
         return vector_id
 
@@ -508,6 +521,8 @@ class RAGService:
             _bump_kb_version()
         async with _kb_lock:
             BUILT_IN_KNOWLEDGE = [k for k in BUILT_IN_KNOWLEDGE if k.get("id") != knowledge_id]
+            # PF-6：内置库变更后重建关键词倒排索引，使被删文档不再被召回
+            _rebuild_keyword_index()
         return True
 
 
