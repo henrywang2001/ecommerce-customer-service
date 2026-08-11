@@ -1,8 +1,20 @@
-"""意图识别服务（集成 Langfuse 追踪）"""
+"""意图识别服务（集成 Langfuse 追踪）
+
+EX-1 声明式意图配置
+--------------------
+- ``IntentSpec`` 为单一来源（single source of truth），集中每个意图的
+  keywords / handler / priority / prompt_label / synonyms；
+- ``INTENT_CONFIGS``、``_INTENT_SYNONYMS`` 以及 LLM 提示词全部由 ``INTENT_SPECS``
+  自动派生。新增（或调整）一个意图 = 往 ``INTENT_SPECS`` 追加一条 ``IntentSpec``，
+  **零识别逻辑改动**。
+
+公共 API 约束：``recognize()`` 的签名与返回结构保持不变，chat_service.py 等调用方无需改动。
+"""
+from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any
-import json
 import re
 import logging
+
 from app.schemas.intent import IntentResult, Entity
 from app.services.llm_service import llm_service as _default_llm_service
 from app.services.observe_service import observe
@@ -10,91 +22,117 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-# 预定义意图配置
-INTENT_CONFIGS: Dict[str, Dict[str, Any]] = {
-    "product_inquiry": {
-        "name": "商品咨询",
-        "keywords": ["商品", "产品", "多少钱", "价格", "怎么样", "好不好", "推荐", "有货"],
-        "handler": "tool",
-        "priority": 5,
-    },
-    "ticket_create": {
-        "name": "提交工单",
-        "keywords": ["工单", "提交工单", "开个工单", "建工单", "创建工单", "问题反馈"],
-        "handler": "tool",
-        "priority": 7,
-    },
-    "order_query": {
-        "name": "订单查询",
-        "keywords": ["订单", "查订单", "什么时候到", "发货没", "物流", "快递", "到哪了"],
-        "handler": "tool",
-        "priority": 8,
-    },
-    "refund_request": {
-        "name": "退款退货",
-        "keywords": ["退款", "退货", "取消订单", "不想要了", "退钱", "换货"],
-        "handler": "tool",
-        "priority": 10,
-    },
-    "complaint": {
-        "name": "投诉",
-        "keywords": ["投诉", "差评", "太差了", "骗子", "态度差", "举报"],
-        "handler": "transfer",
-        "priority": 10,
-    },
-    "human_agent": {
-        "name": "转人工",
-        "keywords": ["人工", "客服", "真人", "转人工", "人工服务", "找人工"],
-        "handler": "transfer",
-        "priority": 10,
-    },
-    "payment_issue": {
-        "name": "支付问题",
-        "keywords": ["支付", "付款", "扣款", "支付失败", "微信支付", "支付宝"],
-        "handler": "rag",
-        "priority": 6,
-    },
-    "shipping_info": {
-        "name": "配送查询",
-        "keywords": ["配送", "送货", "多久到", "配送时间", "包邮"],
-        "handler": "rag",
-        "priority": 6,
-    },
-    "promotion": {
-        "name": "促销活动",
-        "keywords": ["优惠", "活动", "打折", "满减", "优惠券", "折扣", "促销"],
-        "handler": "rag",
-        "priority": 5,
-    },
-    "greeting": {
-        "name": "问候",
-        "keywords": ["你好", "您好", "hi", "hello", "在吗", "嗨"],
-        "handler": "llm",
-        "priority": 1,
-    },
-    "fallback": {
-        "name": "其他",
-        "keywords": [],
-        "handler": "llm",
-        "priority": 0,
-    },
-}
+
+@dataclass
+class IntentSpec:
+    """意图声明式规格 —— 唯一需要维护的意图配置。
+
+    新增/调整意图只改这里，识别逻辑（关键词匹配、LLM 提示词渲染、同义词归一）
+    全部基于本规格自动派生，无需改动任何代码。
+    """
+
+    code: str
+    name: str                       # IntentResult.intent_name 使用的中文名
+    keywords: List[str]             # 关键词匹配词表
+    handler: str                    # 处理类型: rag / tool / transfer / llm
+    priority: int                   # 优先级（用于多策略融合）
+    prompt_label: str               # LLM 提示词中展示的标签，如 "退款退货"
+    synonyms: List[str] = field(default_factory=list)  # 近义/口语化意图码 → 本意图
 
 
-# LLM 可能返回的近义/口语化意图码 → 标准意图码（B8 修复：避免未知码被静默降级为 fallback）
+# ── 单一来源：声明式意图配置 ───────────────────────────────────────────────
+# 新增意图 = 在此追加一条 IntentSpec，识别逻辑零改动。
+INTENT_SPECS: List[IntentSpec] = [
+    IntentSpec(
+        code="product_inquiry", name="商品咨询", handler="tool", priority=5,
+        prompt_label="商品咨询",
+        keywords=["商品", "产品", "多少钱", "价格", "怎么样", "好不好", "推荐", "有货"],
+        synonyms=["商品咨询", "商品查询", "产品咨询", "产品查询"],
+    ),
+    IntentSpec(
+        code="ticket_create", name="提交工单", handler="tool", priority=7,
+        prompt_label="提交工单",
+        keywords=["工单", "提交工单", "开个工单", "建工单", "创建工单", "问题反馈"],
+        synonyms=[],
+    ),
+    IntentSpec(
+        code="order_query", name="订单查询", handler="tool", priority=8,
+        prompt_label="订单查询",
+        keywords=["订单", "查订单", "什么时候到", "发货没", "物流", "快递", "到哪了"],
+        synonyms=["查订单", "订单查询", "我的订单"],
+    ),
+    IntentSpec(
+        code="refund_request", name="退款退货", handler="tool", priority=10,
+        prompt_label="退款退货",
+        keywords=["退款", "退货", "取消订单", "不想要了", "退钱", "换货"],
+        synonyms=["取消订单", "退单", "退货退款"],
+    ),
+    IntentSpec(
+        code="complaint", name="投诉", handler="transfer", priority=10,
+        prompt_label="投诉",
+        keywords=["投诉", "差评", "太差了", "骗子", "态度差", "举报"],
+        synonyms=["投诉建议", "举报", "差评"],
+    ),
+    IntentSpec(
+        code="human_agent", name="转人工", handler="transfer", priority=10,
+        prompt_label="转人工",
+        keywords=["人工", "客服", "真人", "转人工", "人工服务", "找人工"],
+        synonyms=["人工客服", "找人工", "转人工", "真人"],
+    ),
+    IntentSpec(
+        code="payment_issue", name="支付问题", handler="rag", priority=6,
+        prompt_label="支付问题",
+        keywords=["支付", "付款", "扣款", "支付失败", "微信支付", "支付宝"],
+        synonyms=["支付问题", "付款问题", "扣款"],
+    ),
+    IntentSpec(
+        code="shipping_info", name="配送查询", handler="rag", priority=6,
+        prompt_label="配送查询",
+        keywords=["配送", "送货", "多久到", "配送时间", "包邮"],
+        synonyms=["物流查询", "物流", "查物流", "快递查询", "配送查询", "配送"],
+    ),
+    IntentSpec(
+        code="promotion", name="促销活动", handler="rag", priority=5,
+        prompt_label="促销活动",
+        keywords=["优惠", "活动", "打折", "满减", "优惠券", "折扣", "促销"],
+        synonyms=["促销活动", "优惠活动", "打折"],
+    ),
+    IntentSpec(
+        code="greeting", name="问候", handler="llm", priority=1,
+        prompt_label="问候",
+        keywords=["你好", "您好", "hi", "hello", "在吗", "嗨"],
+        synonyms=["打招呼", "问候", "你好"],
+    ),
+    IntentSpec(
+        code="fallback", name="其他", handler="llm", priority=0,
+        prompt_label="其他",
+        keywords=[],
+        synonyms=[],
+    ),
+]
+
+
+# 由单一来源派生的查表表（保留对外名字 INTENT_CONFIGS，值为 IntentSpec）
+INTENT_CONFIGS: Dict[str, IntentSpec] = {s.code: s for s in INTENT_SPECS}
+
+# 由单一来源派生的同义词表（B8 修复：口语化/近义意图码 → 标准码）
 _INTENT_SYNONYMS: Dict[str, str] = {
-    "物流查询": "shipping_info", "物流": "shipping_info", "查物流": "shipping_info",
-    "快递查询": "shipping_info", "配送查询": "shipping_info", "配送": "shipping_info",
-    "取消订单": "refund_request", "退单": "refund_request", "退货退款": "refund_request",
-    "查订单": "order_query", "订单查询": "order_query", "我的订单": "order_query",
-    "商品咨询": "product_inquiry", "商品查询": "product_inquiry",
-    "产品咨询": "product_inquiry", "产品查询": "product_inquiry",
-    "投诉建议": "complaint", "举报": "complaint", "差评": "complaint",
-    "人工客服": "human_agent", "找人工": "human_agent", "转人工": "human_agent", "真人": "human_agent",
-    "支付问题": "payment_issue", "付款问题": "payment_issue", "扣款": "payment_issue",
-    "促销活动": "promotion", "优惠活动": "promotion", "打折": "promotion",
-    "打招呼": "greeting", "问候": "greeting", "你好": "greeting",
+    syn: s.code for s in INTENT_SPECS for syn in s.synonyms
 }
+
+
+def _render_intent_prompt(text: str) -> str:
+    """由 INTENT_SPECS 单一来源渲染 LLM 意图分类提示词。
+
+    新增意图后此提示词自动包含新意图，无需改动任何代码。
+    """
+    intent_lines = ", ".join(f"{s.code}({s.prompt_label})" for s in INTENT_SPECS)
+    return f"""分析以下用户消息的意图，从下列意图中选一个最匹配的：
+可选意图: {intent_lines}
+
+用户消息: {text}
+
+请返回JSON: {{"intent_code": "xxx", "confidence": 0.0-1.0, "reason": "简短理由"}}"""
 
 
 class IntentService:
@@ -126,11 +164,11 @@ class IntentService:
             config = INTENT_CONFIGS[preferred_intent]
             return IntentResult(
                 intent_code=preferred_intent,
-                intent_name=config.get("name", preferred_intent),
+                intent_name=config.name,
                 confidence=0.95,
                 entities=[],
-                handler_type=config["handler"],
-                priority=config["priority"],
+                handler_type=config.handler,
+                priority=config.priority,
             )
 
         # B13：空文本（None 已归一为 "" 或用户传入空白串）直接兜底，
@@ -140,11 +178,11 @@ class IntentService:
             logger.info("输入文本为空，直接返回 fallback 意图")
             return IntentResult(
                 intent_code="fallback",
-                intent_name=cfg["name"],
+                intent_name=cfg.name,
                 confidence=0.0,
                 entities=[],
-                handler_type=cfg["handler"],
-                priority=cfg["priority"],
+                handler_type=cfg.handler,
+                priority=cfg.priority,
             )
 
         text = safe_text
@@ -181,17 +219,17 @@ class IntentService:
         best_priority = 0
 
         for code, config in INTENT_CONFIGS.items():
-            for kw in config["keywords"]:
+            for kw in config.keywords:
                 if kw.lower() in text_lower:
-                    if config["priority"] > best_priority:
-                        best_priority = config["priority"]
+                    if config.priority > best_priority:
+                        best_priority = config.priority
                         best_match = IntentResult(
                             intent_code=code,
-                            intent_name=config.get("name", code),
+                            intent_name=config.name,
                             confidence=0.7,
                             entities=[],
-                            handler_type=config["handler"],
-                            priority=config["priority"],
+                            handler_type=config.handler,
+                            priority=config.priority,
                         )
                     break  # 已匹配此意图，跳到下一个
 
@@ -225,7 +263,7 @@ class IntentService:
             if known in cl or cl in known:
                 return known
         for known, cfg in INTENT_CONFIGS.items():
-            name = cfg.get("name", "")
+            name = cfg.name
             if name and name in code:
                 return known
         # 4) 仍未知 → 退回关键词匹配，避免使用错误意图
@@ -236,14 +274,8 @@ class IntentService:
 
     async def _llm_understand(self, text: str) -> Optional[IntentResult]:
         """LLM 深度意图理解 — Langfuse generation 追踪"""
-        prompt = f"""分析以下用户消息的意图，从下列意图中选一个最匹配的：
-可选意图: product_inquiry(商品咨询), order_query(订单查询), refund_request(退款退货),
-complaint(投诉), human_agent(转人工), payment_issue(支付问题),
-shipping_info(配送查询), promotion(促销活动), greeting(问候), fallback(其他)
-
-用户消息: {text}
-
-请返回JSON: {{"intent_code": "xxx", "confidence": 0.0-1.0, "reason": "简短理由"}}"""
+        # EX-1：提示词由 INTENT_SPECS 单一来源渲染，新增意图自动纳入候选
+        prompt = _render_intent_prompt(text)
 
         # ── Langfuse: 意图分类 generation 追踪 ──
         with observe.generation(
@@ -262,11 +294,11 @@ shipping_info(配送查询), promotion(促销活动), greeting(问候), fallback
                 config = INTENT_CONFIGS[code]
                 intent = IntentResult(
                     intent_code=code,
-                    intent_name=config.get("name", code),
+                    intent_name=config.name,
                     confidence=float(result.get("confidence", 0.6)),
                     entities=[],
-                    handler_type=config["handler"],
-                    priority=config["priority"],
+                    handler_type=config.handler,
+                    priority=config.priority,
                 )
                 if gen is not None:
                     gen.update(output={
