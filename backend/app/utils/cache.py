@@ -6,6 +6,7 @@
 import json
 import time
 import logging
+import threading
 from typing import Any, Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -58,33 +59,72 @@ class Cache:
     """缓存工具类 — 优先 Redis，无 Redis 时使用有界内存"""
 
     def __init__(self):
+        # MN-7b：_redis 三态——
+        #   None   = 尚未探测
+        #   client = 已连接（redis.asyncio client）
+        #   dict   = 退避中 {"next_retry": float, "failures": int}
+        # （兼容测试中将 _redis 置为 False 直接走内存后端的用法）
         self._redis = None
         self._memory = _MemoryBackend()
+        self._hits = 0
+        self._misses = 0
+        self._stats_lock = threading.Lock()
+        self._backoff_base = 2.0       # 退避基数（秒），指数增长
+        self._max_backoff = 30.0       # 退避上限（秒）
 
     async def _get_redis(self):
-        """懒加载 Redis 连接"""
+        """懒加载 Redis 连接，带「退避重试」而非永久降级（MN-7b）。
+
+        - None  → 首次探测
+        - dict  → 处于退避窗口内，直接降级内存（fail-open，不阻断请求）
+        - client→ 已连接
+        - False → 测试/强制内存模式（兼容 conftest 置 _redis=False 的用法）
+        任何失败都 fail-open（返回 None → 走内存），并 LOG 失败；达到退避时间后
+        才会再次尝试重连，避免 Redis 抖动时高频重试打满日志/连接。
+        """
         if self._redis is None:
-            try:
-                import redis.asyncio as redis
-                from app.core.config import settings
-                self._redis = redis.from_url(settings.REDIS_URL, decode_responses=True)
-                await self._redis.ping()
-                logger.info("Redis 已连接")
-            except Exception as e:
-                logger.warning(f"Redis 连接失败，使用内存缓存: {e}")
-                self._redis = False
-        return self._redis if self._redis is not False else None
+            return await self._connect_redis()
+        if isinstance(self._redis, dict):
+            if time.time() < self._redis["next_retry"]:
+                return None
+            return await self._connect_redis()
+        return self._redis
+
+    async def _connect_redis(self):
+        """尝试连接 Redis；失败则记录退避窗口并返回 None（fail-open）。"""
+        try:
+            import redis.asyncio as redis
+            from app.core.config import settings
+            client = redis.from_url(settings.REDIS_URL, decode_responses=True)
+            await client.ping()
+            self._redis = client
+            logger.info("Redis 已连接")
+            return client
+        except Exception as e:
+            failures = (self._redis["failures"] + 1) if isinstance(self._redis, dict) else 1
+            delay = min(self._backoff_base ** failures, self._max_backoff)
+            self._redis = {"next_retry": time.time() + delay, "failures": failures}
+            logger.warning("Redis 连接失败（第 %d 次，%.1fs 后退避重试）: %s", failures, delay, e)
+            return None
 
     async def get(self, key: str) -> Optional[Any]:
-        """获取缓存"""
+        """获取缓存；记录命中/未命中（供 /stats 与监控使用）。"""
         r = await self._get_redis()
         if r:
             try:
                 value = await r.get(key)
-                return json.loads(value) if value else None
+                if value is not None:
+                    self._record_hit()
+                    return json.loads(value)
             except Exception:
-                return None
-        return self._memory.get(key)
+                # Redis 读取异常：记为未命中并回退内存（fail-open）
+                pass
+        v = self._memory.get(key)
+        if v is not None:
+            self._record_hit()
+        else:
+            self._record_miss()
+        return v
 
     async def set(self, key: str, value: Any, expire: int = 3600) -> bool:
         """设置缓存"""
@@ -109,6 +149,25 @@ class Cache:
                 pass
         self._memory.delete(key)
         return True
+
+    def _record_hit(self) -> None:
+        with self._stats_lock:
+            self._hits += 1
+
+    def _record_miss(self) -> None:
+        with self._stats_lock:
+            self._misses += 1
+
+    def stats(self) -> Dict[str, Any]:
+        """返回缓存命中统计（hits / misses / hit_rate）。"""
+        with self._stats_lock:
+            hits, misses = self._hits, self._misses
+        total = hits + misses
+        return {
+            "hits": hits,
+            "misses": misses,
+            "hit_rate": (hits / total) if total else 0.0,
+        }
 
 
 # 全局实例

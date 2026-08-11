@@ -1,5 +1,5 @@
 """用户模型"""
-from sqlalchemy import Column, BigInteger, String, Boolean, DateTime, Enum as SQLEnum
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, Enum as SQLEnum
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from app.core.database import Base
@@ -8,7 +8,9 @@ from app.core.database import Base
 class User(Base):
     __tablename__ = "users"
 
-    id = Column(BigInteger, primary_key=True, autoincrement=True, comment="用户ID")
+    # 使用 Integer 而非 BigInteger：SQLite 仅对 INTEGER PRIMARY KEY 自动自增，
+    # 便于本地/CI 用 SQLite 验证用户落库（MySQL 下 INT 同样满足用户量级的 ID 空间）。
+    id = Column(Integer, primary_key=True, autoincrement=True, comment="用户ID")
     username = Column(String(50), unique=True, nullable=False, comment="用户名")
     email = Column(String(100), unique=True, nullable=True, comment="邮箱")
     phone = Column(String(20), unique=True, nullable=True, comment="手机号")

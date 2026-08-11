@@ -35,7 +35,9 @@ class Message(Base):
     sentiment_score = Column(DECIMAL(3, 2), nullable=True, comment="情感得分")
     is_human_transfer = Column(Boolean, default=False, comment="是否转人工")
     is_generated = Column(Boolean, default=False, comment="是否AI生成")
-    metadata = Column(JSON, nullable=True, comment="元数据")
+    # 注意：属性名不能用 metadata（与 SQLAlchemy Declarative 的 Base.metadata 保留字冲突），
+    # 用 name="metadata" 保留数据库列名为 metadata，避免破坏既有 Schema。
+    msg_metadata = Column("metadata", JSON, nullable=True, comment="元数据")
     created_at = Column(DateTime, default=datetime.utcnow, comment="创建时间")
 
     session = relationship("Session", back_populates="messages")
