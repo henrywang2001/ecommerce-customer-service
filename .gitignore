@@ -20,6 +20,8 @@ nul
 # Node.js
 node_modules/
 dist/
+# Vite 构建临时文件
+vite.config.ts.timestamp-*.mjs
 
 # IDE
 .idea/

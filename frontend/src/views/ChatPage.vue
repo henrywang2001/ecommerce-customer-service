@@ -24,8 +24,8 @@
       </div>
     </transition>
 
-    <!-- 聊天消息区域 -->
-    <div class="chat-messages" ref="messagesContainer" @scroll="onScroll" role="log" aria-live="polite" aria-relevant="additions" aria-label="对话消息区">
+    <!-- 聊天消息区域（PF-3：虚拟滚动，仅渲染可见 + 缓冲 DOM 节点） -->
+    <div class="chat-messages-wrap">
       <!-- 欢迎消息 -->
       <div v-if="chatStore.messages.length === 0" class="welcome">
         <div class="welcome-icon">🤖</div>
@@ -38,54 +38,61 @@
         </div>
       </div>
 
-      <!-- 更早消息入口（P12 窗口化渲染） -->
-      <div
-        v-if="hiddenCount > 0"
-        class="history-banner"
-        role="button"
-        tabindex="0"
-        :aria-label="`查看更早的 ${hiddenCount} 条消息`"
-        @click="loadEarlier"
-        @keydown.enter.prevent="loadEarlier"
+      <!-- 消息列表：虚拟滚动渲染全量消息（气泡高度可变，用 size-dependencies 自适应） -->
+      <DynamicScroller
+        v-else
+        ref="scrollerRef"
+        class="chat-messages"
+        :items="chatStore.messages"
+        :min-item-size="60"
+        key-field="id"
+        role="log"
+        aria-live="polite"
+        aria-relevant="additions"
+        aria-label="对话消息区"
       >
-        ↑ 查看更早的 {{ hiddenCount }} 条消息
-      </div>
-
-      <!-- 消息列表 -->
-      <div
-        v-for="msg in visibleMessages"
-        :key="msg.id"
-        class="message-row"
-        :class="{ 'is-user': msg.isUser, 'is-error': msg.isError }"
-        role="listitem"
-      >
-        <div class="avatar" aria-hidden="true">{{ msg.isUser ? '👤' : '🤖' }}</div>
-        <div class="bubble" :class="[msg.isUser ? 'bubble-user' : 'bubble-bot', { 'bubble-error': msg.isError }]" :role="msg.isError ? 'alert' : undefined">
-          <div class="message-text" v-html="renderMarkdown(msg.content)"></div>
-          <div class="message-time">{{ formatTime(msg.createdAt) }}</div>
-          <div v-if="msg.intent && !msg.isUser" class="intent-tag">
-            <span class="intent-dot"></span>
-            <span>{{ msg.intent.intent_name }} ({{ (msg.intent.confidence * 100).toFixed(0) }}%)</span>
-          </div>
-          <div v-if="!msg.isUser" class="ai-badge">由 AI 生成</div>
-        </div>
-      </div>
+        <template #default="{ item, index, active }">
+          <DynamicScrollerItem
+            :item="item"
+            :active="active"
+            :size-dependencies="[item.content, item.intent]"
+            :data-index="index"
+          >
+            <div
+              class="message-row"
+              :class="{ 'is-user': item.isUser, 'is-error': item.isError }"
+              role="listitem"
+            >
+              <div class="avatar" aria-hidden="true">{{ item.isUser ? '👤' : '🤖' }}</div>
+              <div class="bubble" :class="[item.isUser ? 'bubble-user' : 'bubble-bot', { 'bubble-error': item.isError }]" :role="item.isError ? 'alert' : undefined">
+                <div class="message-text" v-html="renderMarkdown(item.content)"></div>
+                <div class="message-time">{{ formatTime(item.createdAt) }}</div>
+                <div v-if="item.intent && !item.isUser" class="intent-tag">
+                  <span class="intent-dot"></span>
+                  <span>{{ item.intent.intent_name }} ({{ (item.intent.confidence * 100).toFixed(0) }}%)</span>
+                </div>
+                <div v-if="!item.isUser" class="ai-badge">由 AI 生成</div>
+              </div>
+            </div>
+          </DynamicScrollerItem>
+        </template>
+      </DynamicScroller>
 
       <!-- 正在输入中 -->
-      <div v-if="chatStore.isTyping" class="message-row" aria-hidden="true">
+      <div v-if="chatStore.isTyping" class="message-row typing-row" aria-hidden="true">
         <div class="avatar">🤖</div>
         <div class="bubble bubble-bot typing-dots">
           <span></span><span></span><span></span>
         </div>
       </div>
-    </div>
 
-    <!-- 回到底部按钮 -->
-    <transition name="scroll-btn-fade">
-      <button v-if="showScrollBtn" class="scroll-to-bottom" @click="scrollToBottom()">
-        ↓ 回到底部
-      </button>
-    </transition>
+      <!-- 回到底部按钮 -->
+      <transition name="scroll-btn-fade">
+        <button v-if="showScrollBtn" class="scroll-to-bottom" @click="scrollToBottom()">
+          ↓ 回到底部
+        </button>
+      </transition>
+    </div>
 
     <!-- 快捷回复 -->
     <div v-if="chatStore.quickReplies.length > 0" class="quick-reply-bar">
@@ -148,6 +155,9 @@ import { ref, computed, nextTick, watch } from 'vue'
 import { useChatStore } from '@/stores/chat'
 import { useThemeStore } from '@/stores/theme'
 import { renderMarkdown } from '@/utils/markdown'
+// PF-3：虚拟滚动（vue-virtual-scroller v3，兼容 Vue 3）
+import { DynamicScroller, DynamicScrollerItem } from 'vue-virtual-scroller'
+import 'vue-virtual-scroller/dist/vue-virtual-scroller.css'
 
 // F1 守卫：必须显式声明组件名，否则 keep-alive include="ChatPage" 无法命中
 defineOptions({ name: 'ChatPage' })
@@ -155,7 +165,6 @@ defineOptions({ name: 'ChatPage' })
 const chatStore = useChatStore()
 const themeStore = useThemeStore()
 const inputText = ref('')
-const messagesContainer = ref<HTMLElement>()
 const showScrollBtn = ref(false)
 const inputRows = ref(2)
 
@@ -166,35 +175,45 @@ const quickServices = [
   { code: 'human', icon: '👤', name: '转人工', text: '转人工客服' },
 ]
 
-// P12：消息窗口化渲染，限制 DOM 节点数量（仅渲染最近 WINDOW_SIZE 条，可向上加载更早）
-const WINDOW_SIZE = 50
-const windowStart = ref(0)
-const visibleMessages = computed(() => chatStore.messages.slice(windowStart.value))
-const hiddenCount = computed(() => windowStart.value)
+// PF-3：虚拟滚动容器引用（DynamicScroller 自带 scrollToBottom 方法）
+const scrollerRef = ref<any>(null)
+function scrollerEl(): HTMLElement | undefined {
+  const comp = scrollerRef.value as unknown as { $el?: HTMLElement } | undefined
+  return comp?.$el
+}
+
+// 仅在用户原本贴底时跟随新消息，避免浏览历史时视图跳动
+function isAtBottom(): boolean {
+  const el = scrollerEl()
+  if (!el) return true
+  return el.scrollHeight - el.scrollTop - el.clientHeight < 80
+}
+
 watch(
   () => chatStore.messages.length,
-  (len, prev) => {
-    // 仅在原本贴底时跟随新消息，避免正在浏览更早消息时视图跳动
-    if (windowStart.value >= prev - WINDOW_SIZE) {
-      windowStart.value = Math.max(0, len - WINDOW_SIZE)
-    }
+  () => {
+    // 虚拟列表需先渲染出新增节点，下一帧再定位到底部
+    nextTick(() => {
+      if (isAtBottom()) scrollToBottom()
+    })
   },
 )
 watch(
   () => chatStore.sessionId,
-  () => {
-    windowStart.value = 0
-  },
+  () => nextTick(() => scrollToBottom()),
 )
-function loadEarlier() {
-  const el = messagesContainer.value
-  const prevHeight = el ? el.scrollHeight : 0
-  windowStart.value = Math.max(0, windowStart.value - WINDOW_SIZE)
-  // 预加载更早消息后保持当前可视位置稳定
-  nextTick(() => {
-    if (el) el.scrollTop = el.scrollHeight - prevHeight + el.scrollTop
-  })
-}
+// 滚动容器挂载/切换时绑定滚动监听并初始化到底部
+watch(
+  scrollerRef,
+  (comp) => {
+    const el = (comp as unknown as { $el?: HTMLElement } | undefined)?.$el
+    if (el) {
+      el.addEventListener('scroll', onScroll)
+      nextTick(() => scrollToBottom())
+    }
+  },
+  { flush: 'post' },
+)
 
 // F2：会话满意度评价
 const ratingScore = ref(0)
@@ -226,8 +245,8 @@ const sentimentLabel = computed(() => {
 })
 
 function onScroll() {
-  if (!messagesContainer.value) return
-  const el = messagesContainer.value
+  const el = scrollerEl()
+  if (!el) return
   const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
   showScrollBtn.value = distFromBottom > 200
 }
@@ -253,10 +272,7 @@ function sendMessage(text?: string) {
 }
 
 function scrollToBottom() {
-  if (messagesContainer.value) {
-    const el = messagesContainer.value
-    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
-  }
+  scrollerRef.value?.scrollToBottom()
   showScrollBtn.value = false
 }
 
@@ -336,11 +352,16 @@ function formatTime(timeStr: string): string {
   transform: translateY(-20px);
 }
 
+.chat-messages-wrap {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow: hidden;
+}
 .chat-messages {
   flex: 1;
-  overflow-y: auto;
   padding: 16px;
-  scroll-behavior: smooth;
 }
 .chat-messages::-webkit-scrollbar { width: 6px; }
 .chat-messages::-webkit-scrollbar-thumb { background: #ccc; border-radius: 3px; }
@@ -490,7 +511,7 @@ function formatTime(timeStr: string): string {
   transition: transform 0.2s ease, background 0.2s ease;
   white-space: nowrap;
 }
-.chat-messages { position: relative; }
+.chat-messages-wrap { position: relative; }
 .scroll-to-bottom:hover {
   background: rgba(102, 126, 234, 1);
   transform: translateX(50%) translateY(-1px);

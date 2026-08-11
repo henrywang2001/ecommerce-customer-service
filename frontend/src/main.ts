@@ -3,29 +3,16 @@ import App from './App.vue'
 import router from './router'
 import { createPinia } from 'pinia'
 
-// P11：Element Plus 按需引入——仅注册实际使用的组件，避免整包 JS 被打入 bundle
-import {
-  ElButton,
-  ElInput,
-  ElDialog,
-  ElForm,
-  ElFormItem,
-  ElSelect,
-  ElOption,
-  ElCheckbox,
-} from 'element-plus'
-// 保留整份样式表，确保 ElMessage / ElMessageBox 等函数式组件的弹层样式不丢失
-import 'element-plus/dist/index.css'
+// PF-2：Element Plus 改为按需自动导入（见 vite.config.ts 的 AutoImport / Components 插件），
+// 模板内组件样式由解析器自动注入；此处仅保留函数式组件（ElMessage / ElMessageBox）
+// 所需的样式——自动解析器不会为脚本中程序化调用的弹层注入样式，需显式引入。
+import 'element-plus/theme-chalk/base.css'
+import 'element-plus/theme-chalk/el-overlay.css'
+import 'element-plus/theme-chalk/el-message.css'
+import 'element-plus/theme-chalk/el-message-box.css'
 
 const app = createApp(App)
-app.component(ElButton.name!, ElButton)
-app.component(ElInput.name!, ElInput)
-app.component(ElDialog.name!, ElDialog)
-app.component(ElForm.name!, ElForm)
-app.component(ElFormItem.name!, ElFormItem)
-app.component(ElSelect.name!, ElSelect)
-app.component(ElOption.name!, ElOption)
-app.component(ElCheckbox.name!, ElCheckbox)
+// 插件注册保持不变（router / pinia 等）
 app.use(router)
 app.use(createPinia())
 app.mount('#app')

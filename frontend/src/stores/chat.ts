@@ -1,6 +1,5 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import { ElMessage } from 'element-plus'
 import { chatApi, streamSend } from '@/api/chat'
 import request from '@/utils/request'
 import { useAuthStore } from '@/stores/auth'

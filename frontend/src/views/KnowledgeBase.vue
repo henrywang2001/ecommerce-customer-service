@@ -91,7 +91,6 @@
 <script setup lang="ts">
 import { ref, reactive, onMounted } from 'vue'
 import request from '@/utils/request'
-import { ElMessage, ElMessageBox } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
 
 const searchKeyword = ref('')

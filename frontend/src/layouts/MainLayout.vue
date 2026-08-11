@@ -86,7 +86,6 @@ import { useRouter } from 'vue-router'
 import { useChatStore } from '@/stores/chat'
 import { useAuthStore } from '@/stores/auth'
 import { useThemeStore } from '@/stores/theme'
-import { ElMessageBox } from 'element-plus'
 import type { SessionInfo } from '@/types/chat'
 
 const router = useRouter()
