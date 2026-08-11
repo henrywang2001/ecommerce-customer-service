@@ -97,24 +97,37 @@ class RedisRateLimiter:
             return True
 
 
-def create_rate_limiter(max_requests: int = None, window_seconds: int = None):
+def create_rate_limiter(max_requests: int = None, window_seconds: int = None, backend: str = None):
     """根据 Redis 可用性选择后端：可达用 Redis（多进程安全），否则内存模式。
 
+    backend 可强制指定后端：
+      - "memory"：跳过 Redis 探测，直接使用内存模式（测试 / 单进程明确场景）；
+      - "redis" ：强制探测 Redis（探测失败仍回退内存）；
+      - None    ：自动探测（默认行为，保持向后兼容）。
     max_requests / window_seconds 可覆盖默认（用于昂贵接口更严格的限流，P4）。
     """
     mr = max_requests if max_requests is not None else DEFAULT_MAX_REQUESTS
     ws = window_seconds if window_seconds is not None else DEFAULT_WINDOW_SECONDS
-    try:
-        from app.core.config import settings
-        url = settings.REDIS_URL
-        import redis
-        client = redis.from_url(url, socket_connect_timeout=0.5, socket_timeout=0.5)
-        client.ping()
+    # 强制内存模式：不探测 Redis
+    if backend == "memory":
+        logger.info("限流器强制使用内存后端（配置/测试指定）")
+        return InMemoryRateLimiter(max_requests=mr, window_seconds=ws)
+    # 自动探测或强制 Redis：探测成功用 Redis，失败回退内存
+    redis_ok = False
+    if backend != "memory":
+        try:
+            from app.core.config import settings
+            url = settings.REDIS_URL
+            import redis
+            client = redis.from_url(url, socket_connect_timeout=0.5, socket_timeout=0.5)
+            client.ping()
+            redis_ok = True
+        except Exception as e:
+            logger.warning(f"Redis 不可用，限流器回退内存模式（单进程）: {e}")
+    if redis_ok:
         logger.info("限流器使用 Redis 后端（支持多进程/水平扩展）")
         return RedisRateLimiter(url, max_requests=mr, window_seconds=ws)
-    except Exception as e:
-        logger.warning(f"Redis 不可用，限流器回退内存模式（单进程）: {e}")
-        return InMemoryRateLimiter(max_requests=mr, window_seconds=ws)
+    return InMemoryRateLimiter(max_requests=mr, window_seconds=ws)
 
 
 # 全局实例（启动时探测后端）

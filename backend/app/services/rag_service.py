@@ -5,12 +5,12 @@ import json
 import logging
 import re
 import hashlib
-from app.services.embedding_service import embedding_service
+from app.services.embedding_service import embedding_service as _default_embedding
 from app.services.llm_service import llm_service
 from app.services.observe_service import observe
 from app.rag.vector_store import vector_store
 from app.rag.chroma_client import collection_has_docs, invalidate_collection_cache
-from app.utils.cache import cache
+from app.utils.cache import cache as _default_cache
 
 logger = logging.getLogger(__name__)
 
@@ -161,6 +161,12 @@ BUILT_IN_KNOWLEDGE: List[Dict[str, Any]] = [
 class RAGService:
     """检索增强生成服务 — ChromaDB + 千问 Embedding"""
 
+    def __init__(self, cache=None, embedding=None):
+        # 默认复用模块级全局单例，保持缓存/embedding 行为一致；
+        # 注入 fake cache / fake embedding 即可在测试中离线验证（无需 Redis / 联网）。
+        self.cache = cache if cache is not None else _default_cache
+        self.embedding = embedding if embedding is not None else _default_embedding
+
     async def _get_chroma(self):
         """懒加载 ChromaDB 客户端（P7 修复：复用全局单例，避免同目录多客户端锁竞争）"""
         from app.rag.chroma_client import get_chroma_client
@@ -205,7 +211,7 @@ class RAGService:
             # ── PF-1/PF-5: 结果缓存（命中则跳过 embedding + 检索，仅做缓存命中追踪后返回）──
             # 键含 KB 版本号（写操作自增）+ 归一化查询 + 稳定 filters，天然支持主动失效
             res_key = _make_res_key(query, top_k, filters)
-            cached = await cache.get(res_key)
+            cached = await self.cache.get(res_key)
             if cached:
                 if ret is not None:
                     ret.update(
@@ -225,10 +231,10 @@ class RAGService:
                 # ── PF-1/PF-5: embedding 缓存（命中则跳过远程 embedding 调用）──
                 # 键含 KB 版本号 + 归一化查询；知识库变更后旧版本 embedding 键自动 orphan
                 emb_key = _make_emb_key(query)
-                query_embedding = await cache.get(emb_key)
+                query_embedding = await self.cache.get(emb_key)
                 if query_embedding is None:
-                    query_embedding = await embedding_service.encode_single(query)
-                    await cache.set(emb_key, query_embedding, expire=3600)
+                    query_embedding = await self.embedding.encode_single(query)
+                    await self.cache.set(emb_key, query_embedding, expire=3600)
                 is_zero = all(v == 0.0 for v in query_embedding)
             else:
                 is_zero = False
@@ -304,7 +310,7 @@ class RAGService:
                     metadata={"embedding_model": settings.EMBEDDING_MODEL} if chroma_results else {},
                 )
             # ── P5: 写入结果缓存 ──
-            await cache.set(res_key, merged, expire=600)
+            await self.cache.set(res_key, merged, expire=600)
             return merged
 
     def _merge_search_results(
@@ -436,7 +442,7 @@ class RAGService:
             try:
                 from app.core.config import settings
                 collection = chroma.get_or_create_collection(name=settings.CHROMA_COLLECTION)
-                embedding = await embedding_service.encode_single(text)
+                embedding = await self.embedding.encode_single(text)
                 collection.add(
                     ids=[vector_id],
                     embeddings=[embedding],

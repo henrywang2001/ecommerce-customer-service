@@ -28,6 +28,10 @@ MAX_SESSIONS: int = 200
 SESSION_TTL_SECONDS: int = 86400  # 24 小时
 
 
+# 默认 Agent 构造路径（CustomerServiceAgent），供 SessionManager / ChatService 默认注入
+_DEFAULT_AGENT_FACTORY = lambda sid, user_id=None: CustomerServiceAgent(sid, user_id)
+
+
 class SessionManager:
     """会话状态管理器：统一持有三张内存表，并以锁保护所有写操作。
 
@@ -36,7 +40,10 @@ class SessionManager:
     的 Redis 后端承接（见 utils/cache.py、utils/rate_limiter.py，对应 P3/P8）。
     """
 
-    def __init__(self):
+    def __init__(self, agent_factory=None):
+        if agent_factory is None:
+            agent_factory = _DEFAULT_AGENT_FACTORY
+        self._agent_factory = agent_factory
         self._sessions: Dict[str, Dict[str, Any]] = {}
         self._conversations: Dict[str, List[Dict[str, Any]]] = {}
         self._agents: Dict[str, CustomerServiceAgent] = {}
@@ -72,7 +79,7 @@ class SessionManager:
         if sid not in self._conversations:
             self._conversations[sid] = []
         if sid not in self._agents:
-            self._agents[sid] = CustomerServiceAgent(sid, user_id)
+            self._agents[sid] = self._agent_factory(sid, user_id)
         elif user_id is not None:
             # 后续消息若携带已登录身份，同步到 Agent，保证 requires_auth 校验一致 (F1)
             self._agents[sid].user_id = user_id
@@ -170,11 +177,26 @@ class SessionManager:
                 self._sessions[session_id]["satisfaction_score"] = score
 
 
+# 全局会话管理器单例：默认 Agent 构造路径，供 ChatService 默认注入（保持进程内会话态一致）
+SESSION_MANAGER = SessionManager()
+
+
 class ChatService:
     """对话服务"""
 
-    def __init__(self):
-        self.sm = SessionManager()
+    def __init__(self, session_manager=None, agent_factory=None):
+        # agent_factory 默认走现有 CustomerServiceAgent 构造路径
+        if agent_factory is None:
+            agent_factory = _DEFAULT_AGENT_FACTORY
+        self.agent_factory = agent_factory
+        if session_manager is None:
+            # 未注入 session_manager：默认复用模块级全局单例；
+            # 若同时传入自定义 agent_factory 则新构建 SessionManager 以应用之（测试友好）。
+            if agent_factory is _DEFAULT_AGENT_FACTORY:
+                session_manager = SESSION_MANAGER
+            else:
+                session_manager = SessionManager(agent_factory=self.agent_factory)
+        self.session_manager = session_manager
 
     async def create_session(
         self,
@@ -184,11 +206,11 @@ class ChatService:
     ) -> Dict[str, Any]:
         """创建新会话"""
         # 临界区：淘汰过期 + 新建会话元数据 + 容量淘汰
-        async with self.sm._lock:
-            self.sm._purge_expired()
+        async with self.session_manager._lock:
+            self.session_manager._purge_expired()
             session_id = f"sess_{uuid.uuid4().hex[:12]}"
-            self.sm._ensure(session_id, user_id, touch=True)
-            self.sm._evict_lru()
+            self.session_manager._ensure(session_id, user_id, touch=True)
+            self.session_manager._evict_lru()
 
         logger.info(f"会话已创建: {session_id}")
 
@@ -199,14 +221,14 @@ class ChatService:
         if initial_message:
             result = await self.send_message(session_id, initial_message, user_id)
             return {
-                "session": self.sm._sessions.get(session_id),
+                "session": self.session_manager._sessions.get(session_id),
                 "welcome_message": welcome,
                 "quick_replies": quick_replies,
                 "initial_response": result,
             }
 
         return {
-            "session": self.sm._sessions.get(session_id),
+            "session": self.session_manager._sessions.get(session_id),
             "welcome_message": welcome,
             "quick_replies": quick_replies,
         }
@@ -224,7 +246,7 @@ class ChatService:
 
         # 1) 进入临界区：确保会话存在（含 _sessions 元数据，修复 B14）、
         #    刷新活跃时间并排除当前会话做惰性淘汰（修复 B1），随后释放锁。
-        await self.sm.prepare(session_id, user_id)
+        await self.session_manager.prepare(session_id, user_id)
 
         # ── Langfuse: 创建根 Trace ──
         with observe.span(
@@ -237,7 +259,7 @@ class ChatService:
             },
             metadata={
                 "channel": "web",
-                "session_message_count": len(self.sm.get_conversation(session_id)),
+                "session_message_count": len(self.session_manager.get_conversation(session_id)),
             },
         ) as root_span:
 
@@ -298,7 +320,7 @@ class ChatService:
 
             elif intent_result.handler_type == "rag":
                 # 知识检索：优先走 SearchKnowledgeTool（已接线），失败回退 LLM 生成
-                agent = self.sm.get_agent(session_id)
+                agent = self.session_manager.get_agent(session_id)
                 if agent is not None:
                     tool_res = await agent.execute_tool("search_knowledge", {"user_message": content, "top_k": 3})
                 else:
@@ -337,7 +359,7 @@ class ChatService:
             sentiment_score_value = round(sent_score, 2)
 
             # 6. 存储对话历史（B2/B5：落库 intent/sentiment/sentiment_score）
-            now_iso = self.sm._now().isoformat()
+            now_iso = self.session_manager._now().isoformat()
             user_msg = {
                 "role": "user",
                 "content": content,
@@ -356,7 +378,7 @@ class ChatService:
             }
 
             # 7) 提交阶段：加锁落库 + 更新统计（修复 B7 并发写竞争；B1 防 KeyError）
-            await self.sm.commit(session_id, user_msg, assistant_msg)
+            await self.session_manager.commit(session_id, user_msg, assistant_msg)
 
             result = {
                 "response": response_text,
@@ -393,7 +415,7 @@ class ChatService:
         区别仅在于：LLM 与 RAG 分支边生成边推送 token，tool/transfer 分支
         一次性推送整段；结束时再推送一条 done 事件（含意图/情感/快捷回复等元数据）。
         """
-        await self.sm.prepare(session_id, user_id)
+        await self.session_manager.prepare(session_id, user_id)
 
         def _sse(event_type: str, **payload) -> str:
             return f"data: {json.dumps({'type': event_type, **payload}, ensure_ascii=False)}\n\n"
@@ -423,7 +445,7 @@ class ChatService:
                 yield _sse("token", content=response_text)
 
             elif handler == "rag":
-                agent = self.sm.get_agent(session_id)
+                agent = self.session_manager.get_agent(session_id)
                 if agent is not None:
                     tool_res = await agent.execute_tool("search_knowledge", {"user_message": content, "top_k": 3})
                 else:
@@ -438,7 +460,7 @@ class ChatService:
                         yield _sse("token", content=piece)
 
             else:
-                history = self.sm.get_conversation(session_id)
+                history = self.session_manager.get_conversation(session_id)
                 clean_history = [
                     {"role": m["role"], "content": m["content"]}
                     for m in history[-6:]
@@ -472,7 +494,7 @@ class ChatService:
             sentiment_score_value = round(sent_score, 2)
 
             # 落库（与 send_message 一致）
-            now_iso = self.sm._now().isoformat()
+            now_iso = self.session_manager._now().isoformat()
             user_msg = {
                 "role": "user", "content": content, "created_at": now_iso,
                 "intent": None, "sentiment": None, "sentiment_score": None,
@@ -482,7 +504,7 @@ class ChatService:
                 "intent": intent_payload, "sentiment": sentiment_value,
                 "sentiment_score": sentiment_score_value,
             }
-            await self.sm.commit(session_id, user_msg, assistant_msg)
+            await self.session_manager.commit(session_id, user_msg, assistant_msg)
 
             if root_span is not None:
                 root_span.update(output={"response": response_text[:300], "intent_code": intent_result.intent_code})
@@ -506,8 +528,8 @@ class ChatService:
         SessionManager.mark_transferred 将会话状态置为 transferred，与 /chat/transfer
         端点（transfer_to_human）保持一致。
         """
-        await self.sm.mark_transferred(session_id)
-        agent = self.sm.get_agent(session_id)
+        await self.session_manager.mark_transferred(session_id)
+        agent = self.session_manager.get_agent(session_id)
         if agent is not None:
             result = await agent.execute_tool(
                 "transfer_human",
@@ -519,7 +541,7 @@ class ChatService:
     async def _handle_with_tools(self, session_id: str, content: str, intent_result, user_id: Optional[int]) -> str:
         """按意图码分发到对应 Agent 工具（ReAct 工具接线）"""
         code = intent_result.intent_code
-        agent = self.sm.get_agent(session_id)
+        agent = self.session_manager.get_agent(session_id)
         if agent is None:
             return "正在为您处理，请稍候…"
 
@@ -546,7 +568,7 @@ class ChatService:
 
     async def _handle_with_llm(self, session_id: str, content: str, intent_result) -> str:
         """使用 LLM 直接回答"""
-        history = self.sm.get_conversation(session_id)
+        history = self.session_manager.get_conversation(session_id)
         # 存储的每条消息现已含 intent/sentiment 等额外字段，
         # 发送给 LLM 时必须映射为纯 {role, content}，避免多余字段污染输入。
         clean_history = [
@@ -596,7 +618,7 @@ class ChatService:
             page_size = max(1, min(int(page_size), 100))
         except (TypeError, ValueError):
             page, page_size = 1, 20
-        all_messages = self.sm.get_conversation(session_id)
+        all_messages = self.session_manager.get_conversation(session_id)
         total = len(all_messages)
         start = (page - 1) * page_size
         end = start + page_size
@@ -621,15 +643,15 @@ class ChatService:
 
     async def list_sessions(self, user_id: Optional[int] = None) -> Dict[str, Any]:
         """获取会话列表（F4：传入 user_id 时按用户隔离）"""
-        return await self.sm.list_all(user_id=user_id)
+        return await self.session_manager.list_all(user_id=user_id)
 
     async def delete_session(self, session_id: str) -> bool:
         """删除会话：清理内存中的会话元数据、对话历史与 Agent 实例"""
-        return await self.sm.delete(session_id)
+        return await self.session_manager.delete(session_id)
 
     async def transfer_to_human(self, session_id: str, reason: str = "用户主动请求") -> Dict[str, Any]:
         """转人工"""
-        await self.sm.mark_transferred(session_id)
+        await self.session_manager.mark_transferred(session_id)
         return {
             "success": True,
             "message": "已为您转接人工客服",
@@ -640,7 +662,7 @@ class ChatService:
 
     async def rate_session(self, session_id: str, score: int, comment: Optional[str] = None) -> Dict[str, Any]:
         """评价会话"""
-        await self.sm.mark_satisfaction(session_id, score)
+        await self.session_manager.mark_satisfaction(session_id, score)
         logger.info(f"会话评价: session={session_id}, score={score}, comment={comment}")
         return {"success": True, "message": "感谢您的评价！"}
 

@@ -4,7 +4,7 @@ import json
 import re
 import logging
 from app.schemas.intent import IntentResult, Entity
-from app.services.llm_service import llm_service
+from app.services.llm_service import llm_service as _default_llm_service
 from app.services.observe_service import observe
 from app.core.config import settings
 
@@ -100,8 +100,9 @@ _INTENT_SYNONYMS: Dict[str, str] = {
 class IntentService:
     """意图识别服务"""
 
-    def __init__(self):
-        pass
+    def __init__(self, llm_service=None):
+        # 默认复用全局 LLM 服务；测试可注入 fake LLM 服务。
+        self.llm_service = llm_service if llm_service is not None else _default_llm_service
 
     async def recognize(self, text: str, user_id: Optional[int] = None, preferred_intent: Optional[str] = None) -> IntentResult:
         """识别用户意图 — 多策略融合
@@ -247,11 +248,11 @@ shipping_info(配送查询), promotion(促销活动), greeting(问候), fallback
         # ── Langfuse: 意图分类 generation 追踪 ──
         with observe.generation(
             name="intent-classify",
-            model=llm_service.model,
+            model=self.llm_service.model,
             input=text,
             model_parameters={"temperature": 0.1, "task": "intent_classification"},
         ) as gen:
-            result = await llm_service.generate_json(prompt, max_tokens=256)
+            result = await self.llm_service.generate_json(prompt, max_tokens=256)
             if result:
                 raw_code = result.get("intent_code", "fallback")
                 code = self._normalize_intent_code(raw_code, text)

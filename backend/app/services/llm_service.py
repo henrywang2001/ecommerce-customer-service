@@ -17,12 +17,14 @@ logger = logging.getLogger(__name__)
 class LLMService:
     """大语言模型服务 — DeepSeek"""
 
-    def __init__(self):
+    def __init__(self, client=None):
         self.api_key = settings.LLM_API_KEY
         self.model = settings.LLM_MODEL
         self.api_base = settings.LLM_API_BASE.rstrip("/")
         self.max_tokens = settings.LLM_MAX_TOKENS
         self.temperature = settings.LLM_TEMPERATURE
+        # 默认复用共享连接池客户端（get_http_client）；测试可注入 fake client 离线验证。
+        self.client = client
 
     async def generate(
         self,
@@ -56,7 +58,7 @@ class LLMService:
             },
         ) as gen:
             try:
-                client = get_http_client()
+                client = self.client if self.client is not None else get_http_client()
                 response = await post_with_resilience(
                     client,
                     f"{self.api_base}/chat/completions",
@@ -123,7 +125,7 @@ class LLMService:
             },
         ) as gen:
             try:
-                client = get_http_client()
+                client = self.client if self.client is not None else get_http_client()
                 response = await post_with_resilience(
                     client,
                     f"{self.api_base}/chat/completions",
@@ -197,7 +199,7 @@ class LLMService:
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
-        client = get_http_client()
+        client = self.client if self.client is not None else get_http_client()
         async for line in stream_post(
             client,
             f"{self.api_base}/chat/completions",

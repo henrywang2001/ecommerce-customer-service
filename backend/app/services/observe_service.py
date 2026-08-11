@@ -37,7 +37,12 @@ class ObserveService:
     _client: Optional[Langfuse] = None
     _ready: bool = False
 
-    def __init__(self):
+    def __init__(self, client=None):
+        # 默认按 settings 初始化 Langfuse 客户端；测试可注入 client 以离线验证追踪。
+        if client is not None:
+            self._client = client
+            self._ready = True
+            return
         self._init_client()
 
     def _init_client(self) -> None:
