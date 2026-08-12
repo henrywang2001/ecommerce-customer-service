@@ -66,6 +66,13 @@
               <div class="avatar" aria-hidden="true">{{ item.isUser ? '👤' : '🤖' }}</div>
               <div class="bubble" :class="[item.isUser ? 'bubble-user' : 'bubble-bot', { 'bubble-error': item.isError }]" :role="item.isError ? 'alert' : undefined">
                 <div class="message-text" v-html="renderMarkdown(item.content)"></div>
+                <!-- 流式打字指示器：合并到正在生成的 bot 气泡内，而非独立成行 -->
+                <span
+                  v-if="chatStore.isTyping && !item.isUser && index === chatStore.messages.length - 1"
+                  class="typing-inline"
+                  role="status"
+                  aria-label="正在输入"
+                ><span></span><span></span><span></span></span>
                 <div class="message-time">{{ formatTime(item.createdAt) }}</div>
                 <div v-if="item.intent && !item.isUser" class="intent-tag">
                   <span class="intent-dot"></span>
@@ -77,14 +84,6 @@
           </DynamicScrollerItem>
         </template>
       </DynamicScroller>
-
-      <!-- 正在输入中 -->
-      <div v-if="chatStore.isTyping" class="message-row typing-row" aria-hidden="true">
-        <div class="avatar">🤖</div>
-        <div class="bubble bubble-bot typing-dots">
-          <span></span><span></span><span></span>
-        </div>
-      </div>
 
       <!-- 回到底部按钮 -->
       <transition name="scroll-btn-fade">
@@ -288,12 +287,12 @@ function formatTime(timeStr: string): string {
   display: flex;
   flex-direction: column;
   height: 100vh;
-  max-width: 800px;
-  margin: 0 auto;
+  width: 100%;
+  /* 去掉 max-width + margin:auto：让聊天区横向撑满内容区，消除与侧边栏之间的空白间隙 */
   background:
     repeating-linear-gradient(0deg, transparent, transparent 19px, rgba(102, 126, 234, 0.03) 19px, rgba(102, 126, 234, 0.03) 20px),
     repeating-linear-gradient(90deg, transparent, transparent 19px, rgba(102, 126, 234, 0.03) 19px, rgba(102, 126, 234, 0.03) 20px),
-    #f5f5f5;
+    var(--bg-primary);
   box-shadow: 0 0 20px rgba(0,0,0,0.05);
 }
 
@@ -358,10 +357,12 @@ function formatTime(timeStr: string): string {
   flex-direction: column;
   position: relative;
   overflow: hidden;
+  width: 100%;
 }
 .chat-messages {
   flex: 1;
   padding: 16px;
+  width: 100%;
 }
 .chat-messages::-webkit-scrollbar { width: 6px; }
 .chat-messages::-webkit-scrollbar-thumb { background: #ccc; border-radius: 3px; }
@@ -371,8 +372,8 @@ function formatTime(timeStr: string): string {
   padding: 60px 20px;
 }
 .welcome-icon { font-size: 64px; margin-bottom: 16px; }
-.welcome h2 { margin-bottom: 8px; color: #333; }
-.welcome p { color: #999; margin-bottom: 24px; }
+.welcome h2 { margin-bottom: 8px; color: var(--text-primary); }
+.welcome p { color: var(--text-secondary); margin-bottom: 24px; }
 .quick-services { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
 
 .quick-service-btn {
@@ -387,15 +388,18 @@ function formatTime(timeStr: string): string {
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  margin-bottom: 16px;
+  width: 100%;
+  padding-bottom: 16px;
 }
 .message-row:not(.is-user) {
-  max-width: 85%;
+  justify-content: flex-start;
 }
 .message-row.is-user {
+  /* 用户消息在右侧展示（微信/客服常见布局）：
+     row-reverse 让头像在右、气泡在左；
+     反向主轴的 flex-start = 视觉最右侧，确保整行贴右 */
   flex-direction: row-reverse;
-  margin-left: auto;
-  max-width: 70%;
+  justify-content: flex-start;
 }
 .avatar {
   width: 34px;
@@ -406,31 +410,34 @@ function formatTime(timeStr: string): string {
   justify-content: center;
   flex-shrink: 0;
   font-size: 18px;
-  background: #f0f0f0;
+  background: var(--bg-secondary);
 }
 .bubble {
   padding: 10px 14px;
   border-radius: 12px;
   line-height: 1.6;
   transition: transform 0.2s ease, box-shadow 0.2s ease;
+  max-width: 85%;
+  min-width: 0;
 }
 .bubble:hover {
   transform: scale(1.01);
 }
 .bubble-user {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: var(--bubble-user);
   color: #fff;
   border-bottom-right-radius: 4px;
   box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
+  max-width: 70%;
 }
 .bubble-user:hover {
   box-shadow: 0 4px 16px rgba(102, 126, 234, 0.45);
 }
 .bubble-bot {
-  background: #fff;
-  color: #333;
+  background: var(--bubble-bot);
+  color: var(--text-primary);
   border-bottom-left-radius: 4px;
-  box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+  box-shadow: var(--shadow-sm);
 }
 .bubble-bot:hover {
   box-shadow: 0 3px 12px rgba(0,0,0,0.12);
@@ -449,6 +456,9 @@ function formatTime(timeStr: string): string {
 .message-text li { margin: 2px 0; }
 .message-text pre { background: rgba(0,0,0,0.04); border-radius: 8px; padding: 10px 12px; overflow-x: auto; margin: 8px 0; }
 .message-text code { font-family: 'SFMono-Regular', Consolas, monospace; font-size: 13px; background: rgba(0,0,0,0.05); padding: 1px 5px; border-radius: 4px; }
+/* 深色模式：代码块背景改为浅色友好的半透明，避免浅灰盒子浮在深色气泡上 */
+body.dark .message-text pre { background: rgba(255,255,255,0.08); }
+body.dark .message-text code { background: rgba(255,255,255,0.12); }
 .message-text pre code { background: transparent; padding: 0; }
 .message-text blockquote { border-left: 3px solid var(--accent); margin: 8px 0; padding: 2px 12px; color: var(--text-secondary); }
 .message-text table { border-collapse: collapse; margin: 8px 0; font-size: 13px; }
@@ -461,7 +471,7 @@ function formatTime(timeStr: string): string {
 }
 .bubble-user .message-text :deep(a) { color: #fff; }
 .bubble-bot .message-text :deep(a) { color: #667eea; }
-.message-time { font-size: 10px; color: #595959; margin-top: 4px; }
+.message-time { font-size: 10px; color: var(--text-muted); margin-top: 4px; }
 .bubble-user .message-time { color: rgba(255,255,255,0.9); }
 
 .intent-tag {
@@ -469,7 +479,7 @@ function formatTime(timeStr: string): string {
   align-items: center;
   gap: 4px;
   font-size: 10px;
-  color: #595959;
+  color: var(--text-muted);
   margin-top: 6px;
   background: rgba(102, 126, 234, 0.08);
   padding: 2px 10px;
@@ -482,14 +492,21 @@ function formatTime(timeStr: string): string {
   background: #667eea;
 }
 
-.typing-dots { display: flex; gap: 4px; padding: 14px 18px; }
-.typing-dots span {
-  width: 7px; height: 7px; background: #ccc; border-radius: 50%;
+.typing-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+}
+.typing-inline span {
+  width: 6px; height: 6px;
+  background: var(--accent);
+  border-radius: 50%;
   animation: wave 1.4s infinite ease-in-out;
 }
-.typing-dots span:nth-child(1) { animation-delay: 0s; }
-.typing-dots span:nth-child(2) { animation-delay: 0.2s; }
-.typing-dots span:nth-child(3) { animation-delay: 0.4s; }
+.typing-inline span:nth-child(1) { animation-delay: 0s; }
+.typing-inline span:nth-child(2) { animation-delay: 0.2s; }
+.typing-inline span:nth-child(3) { animation-delay: 0.4s; }
 @keyframes wave {
   0%, 80%, 100% { transform: translateY(0); opacity: 0.3; }
   40% { transform: translateY(-6px); opacity: 1; }
@@ -526,8 +543,8 @@ function formatTime(timeStr: string): string {
   display: flex;
   gap: 8px;
   padding: 10px 16px;
-  background: #f8f9fa;
-  border-top: 1px solid #eee;
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border-color);
   flex-wrap: wrap;
 }
 .quick-reply-btn {
@@ -560,8 +577,8 @@ function formatTime(timeStr: string): string {
   align-items: center;
   gap: 10px;
   padding: 8px 16px;
-  background: #fff;
-  border-top: 1px solid #eee;
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border-color);
   font-size: 13px;
   color: var(--text-secondary);
   flex-wrap: wrap;
@@ -598,8 +615,8 @@ function formatTime(timeStr: string): string {
   gap: 8px;
   align-items: flex-end;
   padding: 12px 16px;
-  background: #fff;
-  border-top: 1px solid #eee;
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border-color);
 }
 .chat-input :deep(.el-textarea__inner) {
   resize: none;
@@ -615,8 +632,8 @@ function formatTime(timeStr: string): string {
 }
 
 @media (max-width: 768px) {
-  .message-row:not(.is-user) { max-width: 90%; }
-  .message-row.is-user { max-width: 90%; }
+  .bubble { max-width: 90%; }
+  .bubble-user { max-width: 90%; }
   .chat-header { padding: 8px 12px; }
   .chat-input { padding: 8px 12px; }
   .chat-textarea :deep(.el-textarea__inner) { font-size: 14px; }
